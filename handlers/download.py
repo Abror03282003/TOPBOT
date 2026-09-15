@@ -17,10 +17,12 @@ SEARCH_CACHE = {}
 
 def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
     """Qo'shiq yuklangandan keyin chiqariladigan tugmalar (Lyrics tugmasi bilan)."""
-    encoded_name = urllib.parse.quote(song_name)
+    safe_name = song_name[:25]
+    encoded_name = urllib.parse.quote(safe_name)
+    
     keyboard = [
         [
-            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"lyrics_{encoded_name}")
+            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"lyr_{encoded_name}")
         ],
         [
             InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
@@ -88,9 +90,9 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     next_page = page + 1 if page < total_pages - 1 else 0
     
     control_row = [
-        InlineKeyboardButton(text="⬅️", callback_data=f"page_{search_id}_{prev_page}"),
-        InlineKeyboardButton(text="❌", callback_data=f"close_{search_id}"),
-        InlineKeyboardButton(text="➡️", callback_data=f"page_{search_id}_{next_page}")
+        InlineKeyboardButton(text="⬅️", callback_data=f"p_{search_id}_{prev_page}"),
+        InlineKeyboardButton(text="❌", callback_data=f"cl_{search_id}"),
+        InlineKeyboardButton(text="➡️", callback_data=f"p_{search_id}_{next_page}")
     ]
     keyboard.append(control_row)
     
@@ -144,7 +146,7 @@ async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str,
 # Foydalanuvchi havola (link) yuborganda
 @router.message(F.text.startswith("http"))
 async def handle_link(message: Message):
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     msg = await message.answer("⏳ Video yuklanmoqda...")
     try:
         data = await download_media(message.text)
@@ -170,7 +172,7 @@ async def handle_link(message: Message):
 # Oddiy matnli qidiruv yuborilganda
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_search(message: Message):
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     msg = await message.answer("🔍 Qidirilmoqda...")
     try:
         results = await search_tracks(message.text, limit=30)
@@ -187,10 +189,10 @@ async def handle_search(message: Message):
         await msg.edit_text("❌ Qidiruvda xatolik yuz berdi.")
 
 
-# Voice (Ovozli xabar), Video Note (Dumaloq video) yoki Audio yuborilganda
+# Voice, Video Note yoki Audio yuborilganda
 @router.message(F.voice | F.video_note | F.audio)
 async def handle_all_media_types(message: Message):
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     status_msg = await message.answer("🎧 Tashlangan media eshitib ko'rilmoqda...")
     
     file_id = None
@@ -251,9 +253,9 @@ async def handle_identify_song(call: CallbackQuery):
 
 
 # Musiqa matni (Lyrics) tugmasi bosilganda
-@router.callback_query(F.data.startswith("lyrics_"))
+@router.callback_query(F.data.startswith("lyr_"))
 async def handle_lyrics_callback(call: CallbackQuery):
-    song_name = urllib.parse.unquote(call.data.replace("lyrics_", ""))
+    song_name = urllib.parse.unquote(call.data.replace("lyr_", ""))
     await call.answer("📜 Matn tayyorlanmoqda...")
     
     query = urllib.parse.quote(f"{song_name} lyrics matni")
@@ -280,7 +282,7 @@ async def handle_save_to_saved(call: CallbackQuery):
         await call.answer("❌ Saqlashda xatolik yuz berdi.", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("page_"))
+@router.callback_query(F.data.startswith("p_"))
 async def handle_page_callback(call: CallbackQuery):
     parts = call.data.split("_")
     search_id = parts[1]
@@ -332,9 +334,9 @@ async def handle_download_callback(call: CallbackQuery):
         await status_msg.edit_text(f"❌ Audio yuklashda xatolik: {e}")
 
 
-@router.callback_query(F.data.startswith("close_"))
+@router.callback_query(F.data.startswith("cl_"))
 async def handle_close_callback(call: CallbackQuery):
-    search_id = call.data.replace("close_", "")
+    search_id = call.data.replace("cl_", "")
     if search_id in SEARCH_CACHE:
         del SEARCH_CACHE[search_id]
     await call.message.delete()
