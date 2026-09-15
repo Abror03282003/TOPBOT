@@ -3,31 +3,32 @@ import shutil
 import asyncio
 import yt_dlp
 
+try:
+    import imageio_ffmpeg
+    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    FFMPEG_PATH = shutil.which("ffmpeg") or shutil.which("ffprobe") or "/usr/bin/ffmpeg"
+
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-# FFmpeg dasturini tizimdan izlash
-FFMPEG_PATH = shutil.which("ffmpeg") or shutil.which("ffprobe") or "/root/.nix-profile/bin/ffmpeg" or "/usr/bin/ffmpeg"
 COOKIES_PATH = "cookies.txt"
 
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'nocheckcertificate': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'ios', 'mweb'],
+            'player_client': ['ios', 'android', 'mweb'],
             'player_skip': ['configs', 'webpage']
         }
     }
 }
 
-# FFmpeg mavjud bo'lsa biriktirish
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
-# Cookies fayli mavjud va bo'sh bo'lmasa biriktirish
 if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
     BASE_YDL_OPTS['cookiefile'] = COOKIES_PATH
 
@@ -61,7 +62,7 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
             return res
         raise Exception("YouTube empty results")
     except Exception:
-        # YouTube blok berganda SoundCloud orqali qidiruv
+        # YouTube blok bersa SoundCloud orqali qidiradi
         ydl_opts['default_search'] = f'scsearch{limit}'
         def _sc_search():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -129,4 +130,3 @@ async def download_media(url: str) -> dict:
             }
 
     return await asyncio.to_thread(_download)
-    
