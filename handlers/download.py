@@ -1,5 +1,6 @@
 import os
 import uuid
+import subprocess
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from shazamio import Shazam
@@ -143,18 +144,43 @@ async def handle_identify_song(call: CallbackQuery):
     try:
         if call.message.video:
             os.makedirs("downloads", exist_ok=True)
-            file_info = await call.bot.get_file(call.message.video.file_id)
-            input_file = f"downloads/temp_{call.message.video.file_id}.mp4"
-            audio_file = f"downloads/temp_audio_{call.message.video.file_id}.mp3"
+            file_id = call.message.video.file_id
+            file_info = await call.bot.get_file(file_id)
             
-            # Videoni yuklab olish
+            file_hash = uuid.uuid4().hex[:6]
+            input_file = f"downloads/temp_{file_hash}.mp4"
+            audio_file = f"downloads/audio_{file_hash}.m4a"
+            
+            # Videoni serverga yuklab olish
             await call.bot.download_file(file_info.file_path, input_file)
             
-            # FFmpeg orqali videodan audio ajratib olish (Shazam uchun eng maqbul format)
-            os.system(f'ffmpeg -i "{input_file}" -vn -acodec libmp3lame -ar 44100 -ac 2 -b:a 192k "{audio_file}" -y')
+            # FFmpeg orqali audioni ajratish
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", input_file,
+                "-vn",
+                "-acodec", "copy",
+                audio_file
+            ]
             
-            if not os.path.exists(audio_file):
-                await status_msg.edit_text("❌ Audioni ajratishda xatolik yuz berdi.")
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            
+            # Agar -c:a copy o'xshamasa, standart aac o'tkaziladi
+            if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
+                cmd_fallback = [
+                    "ffmpeg", "-y",
+                    "-i", input_file,
+                    "-vn",
+                    "-acodec", "aac",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    audio_file
+                ]
+                process = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
+                err_details = process.stderr[-200:] if process.stderr else "Noma'lum FFmpeg xatoligi"
+                await status_msg.edit_text(f"❌ Audioni ajratishda xatolik:\n<code>{err_details}</code>", parse_mode="HTML")
                 return
 
             # Shazam orqali tanish
@@ -169,7 +195,7 @@ async def handle_identify_song(call: CallbackQuery):
                 
                 await status_msg.edit_text(f"🎵 Topilgan qo'shiq: <b>{full_song_name}</b>\n🔍 To'liq versiyalari qidirilmoqda...", parse_mode="HTML")
                 
-                # YouTube'dan qo'shiq nomi bo'yicha to'liq variantlarni qidirish
+                # YouTube'dan qidirish
                 results = await search_tracks(full_song_name, limit=30)
                 if results:
                     search_id = str(uuid.uuid4())[:8]
@@ -177,15 +203,14 @@ async def handle_identify_song(call: CallbackQuery):
                     text, markup = render_page(results, search_id, page=0)
                     await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
                 else:
-                    await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{full_song_name}</b>, lekin to'liq mp3 versiyasi topilmadi.", parse_mode="HTML")
+                    await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{full_song_name}</b>, lekin mp3 versiyasi topilmadi.", parse_mode="HTML")
             else:
                 await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi (Shazam topa olmadi).")
         else:
             await status_msg.edit_text("❌ Video topilmadi.")
     except Exception as e:
-        await status_msg.edit_text(f"❌ Qo'shiqni aniqlashda xatolik: {e}")
+        await status_msg.edit_text(f"❌ Ishlov berishda xatolik: {e}")
     finally:
-        # Vaqtinchalik fayllarni tozalash
         if input_file and os.path.exists(input_file):
             os.remove(input_file)
         if audio_file and os.path.exists(audio_file):
