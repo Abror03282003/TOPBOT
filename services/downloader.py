@@ -15,7 +15,6 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
-# Anti-bot va blokirovkaga tushmaslik sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -24,12 +23,11 @@ BASE_YDL_OPTS = {
     'geo_bypass': True,
 }
 
-if FFMPEG_PATH:
+if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
 
 def _get_active_opts(extra_opts: dict) -> dict:
-    """Cookies fayli borligini dinamik tekshirib, opsiyalarni beradi."""
     opts = {**BASE_YDL_OPTS, **extra_opts}
     if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
         opts['cookiefile'] = COOKIES_PATH
@@ -79,13 +77,12 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
-    """MP3 formatida yuklab olish (xatoliklarsiz va moslashuvchan format bilan)."""
+    """MP3 yoki har qanday mavjud audio formatda yuklab olish."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     ydl_opts = _get_active_opts({
-        # FORMAT MOSLASHUVCHAN QILINDI: bestaudio bolmasa, oddiy eng past sifatli videodan bo'lsa ham audioni ajratadi
-        'format': 'bestaudio/bestaudio*/best',
-        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'format': 'bestaudio/best',
+        'outtmpl': f'{DOWNLOAD_DIR}/{video_id}.%(ext)s',
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web']
@@ -100,27 +97,21 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
 
     def _download():
         title = "Audio Track"
-        file_id = video_id
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
-                    file_id = info.get('id', video_id)
-                else:
-                    logging.error(f"yt-dlp info ololmadi: {url}")
         except Exception as e:
             logging.error(f"Download error: {e}")
 
-        # Tayyor mp3 faylini tekshiramiz
-        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
+        # 1. MP3 fayl hosil bo'lganini tekshirish
+        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
         if os.path.exists(expected_mp3):
             return expected_mp3, title
 
-        # MP3 bo'lmasa, har qanday hosil bo'lgan media faylini olamiz
-        pattern = os.path.join(DOWNLOAD_DIR, f"{file_id}.*")
+        # 2. Agar MP3 ga o'tmagan bo'lsa (m4a, webm, va h.k.), har qanday mos faylni izlash
+        pattern = os.path.join(DOWNLOAD_DIR, f"{video_id}.*")
         files = glob.glob(pattern)
         if files:
             return files[0], title
