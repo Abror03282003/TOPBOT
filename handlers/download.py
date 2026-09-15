@@ -134,24 +134,33 @@ async def handle_save_to_saved(call: CallbackQuery):
 
 @router.callback_query(F.data == "identify_and_search_song")
 async def handle_identify_song(call: CallbackQuery):
-    """Videodagi qo'shiqni aniqlash va to'liq variantlarini qidirib berish."""
+    """Videodagi qo'shiqni ajratib olish, Shazam orqali tanish va qidiruv natijalarini chiqarish."""
     await call.answer("🔍 Qo'shiq aniqlanmoqda...")
     status_msg = await call.message.answer("🎧 Videodagi qo'shiq eshitib ko'rilmoqda...")
     
+    input_file = None
+    audio_file = None
     try:
         if call.message.video:
+            os.makedirs("downloads", exist_ok=True)
             file_info = await call.bot.get_file(call.message.video.file_id)
-            input_file = f"downloads/temp_video_{call.message.video.file_id}.mp4"
+            input_file = f"downloads/temp_{call.message.video.file_id}.mp4"
+            audio_file = f"downloads/temp_audio_{call.message.video.file_id}.mp3"
             
+            # Videoni yuklab olish
             await call.bot.download_file(file_info.file_path, input_file)
             
+            # FFmpeg orqali videodan audio ajratib olish (Shazam uchun eng maqbul format)
+            os.system(f'ffmpeg -i "{input_file}" -vn -acodec libmp3lame -ar 44100 -ac 2 -b:a 192k "{audio_file}" -y')
+            
+            if not os.path.exists(audio_file):
+                await status_msg.edit_text("❌ Audioni ajratishda xatolik yuz berdi.")
+                return
+
             # Shazam orqali tanish
             shazam = Shazam()
-            out = await shazam.recognize(input_file)
+            out = await shazam.recognize(audio_file)
             
-            if os.path.exists(input_file):
-                os.remove(input_file)
-                
             track = out.get('track')
             if track:
                 title = track.get('title', '')
@@ -170,11 +179,17 @@ async def handle_identify_song(call: CallbackQuery):
                 else:
                     await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{full_song_name}</b>, lekin to'liq mp3 versiyasi topilmadi.", parse_mode="HTML")
             else:
-                await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi.")
+                await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi (Shazam topa olmadi).")
         else:
             await status_msg.edit_text("❌ Video topilmadi.")
     except Exception as e:
         await status_msg.edit_text(f"❌ Qo'shiqni aniqlashda xatolik: {e}")
+    finally:
+        # Vaqtinchalik fayllarni tozalash
+        if input_file and os.path.exists(input_file):
+            os.remove(input_file)
+        if audio_file and os.path.exists(audio_file):
+            os.remove(audio_file)
 
 
 @router.callback_query(F.data.startswith("page_"))
