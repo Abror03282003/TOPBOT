@@ -2,12 +2,32 @@ import os
 import uuid
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from shazamio import Shazam
 from services.downloader import search_tracks, download_media, download_audio_by_id
 
 router = Router()
 
-# Qidiruv natijalarini vaqtincha saqlash xotirasi
+BOT_USERNAME = "top_botuz_bot"  # Botingiz username'i
 SEARCH_CACHE = {}
+
+
+def build_video_keyboard() -> InlineKeyboardMarkup:
+    """Video ostidagi tugmalar paneli."""
+    keyboard = [
+        [
+            InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
+        ],
+        [
+            InlineKeyboardButton(text="📩 Qo'shiqni yuklab olish", callback_data="identify_and_search_song")
+        ],
+        [
+            InlineKeyboardButton(
+                text="Guruhga qo'shish ⤴️", 
+                url=f"https://t.me/{BOT_USERNAME}?startgroup=true"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
@@ -22,29 +42,27 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     
     current_items = results[start_idx:end_idx]
     
-    # 1. Matnni shakllantirish (1-10, 11-20 va h.k.)
     text = f"🔍 Topilgan qo'shiqlar (Sahifa {page + 1}/{total_pages}):\n\n"
     for i, item in enumerate(current_items, start=start_idx + 1):
         text += f"<b>{i}.</b> {item['title']} <b>{item['duration']}</b>\n"
         
-    # 2. Raqamli tugmalarni shakllantirish (Doim 1, 2, 3, 4, 5 va 6, 7, 8, 9, 10 bo'ladi)
     keyboard = []
     
-    # 1-qator (Sahifadagi birinchi 5 ta tugma: 1 2 3 4 5)
+    # 1-qator: 1 2 3 4 5
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
         row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
     if row1:
         keyboard.append(row1)
         
-    # 2-qator (Sahifadagi keyingi 5 ta tugma: 6 7 8 9 10)
+    # 2-qator: 6 7 8 9 10
     if end_idx > start_idx + 5:
         row2 = []
         for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
             row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
         keyboard.append(row2)
         
-    # 3-qator: Sahifalash va yopish tugmalari (⬅️ ❌ ➡️)
+    # 3-qator: ⬅️ ❌ ➡️
     prev_page = page - 1 if page > 0 else total_pages - 1
     next_page = page + 1 if page < total_pages - 1 else 0
     
@@ -67,9 +85,12 @@ async def handle_link(message: Message):
         
         if file_path and os.path.exists(file_path):
             video_file = FSInputFile(file_path)
+            caption_text = f"📩 @{BOT_USERNAME} orqali yuklab olindi"
+            
             await message.answer_video(
                 video=video_file, 
-                caption=data.get("title", "")[:1024]
+                caption=caption_text,
+                reply_markup=build_video_keyboard()
             )
             os.remove(file_path)
             await msg.delete()
@@ -95,6 +116,65 @@ async def handle_search(message: Message):
         await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ Qidiruvda xatolik yuz berdi.")
+
+
+@router.callback_query(F.data == "save_to_saved_messages")
+async def handle_save_to_saved(call: CallbackQuery):
+    """Videoni 'Saqlangan xabarlar'ga yuborish."""
+    try:
+        await call.bot.copy_message(
+            chat_id=call.from_user.id,
+            from_chat_id=call.message.chat.id,
+            message_id=call.message.message_id
+        )
+        await call.answer("✅ 'Saqlangan xabarlar'ga yuborildi!", show_alert=True)
+    except Exception:
+        await call.answer("❌ Saqlashda xatolik yuz berdi.", show_alert=True)
+
+
+@router.callback_query(F.data == "identify_and_search_song")
+async def handle_identify_song(call: CallbackQuery):
+    """Videodagi qo'shiqni aniqlash va to'liq variantlarini qidirib berish."""
+    await call.answer("🔍 Qo'shiq aniqlanmoqda...")
+    status_msg = await call.message.answer("🎧 Videodagi qo'shiq eshitib ko'rilmoqda...")
+    
+    try:
+        if call.message.video:
+            file_info = await call.bot.get_file(call.message.video.file_id)
+            input_file = f"downloads/temp_video_{call.message.video.file_id}.mp4"
+            
+            await call.bot.download_file(file_info.file_path, input_file)
+            
+            # Shazam orqali tanish
+            shazam = Shazam()
+            out = await shazam.recognize(input_file)
+            
+            if os.path.exists(input_file):
+                os.remove(input_file)
+                
+            track = out.get('track')
+            if track:
+                title = track.get('title', '')
+                subtitle = track.get('subtitle', '')
+                full_song_name = f"{subtitle} {title}".strip()
+                
+                await status_msg.edit_text(f"🎵 Topilgan qo'shiq: <b>{full_song_name}</b>\n🔍 To'liq versiyalari qidirilmoqda...", parse_mode="HTML")
+                
+                # YouTube'dan qo'shiq nomi bo'yicha to'liq variantlarni qidirish
+                results = await search_tracks(full_song_name, limit=30)
+                if results:
+                    search_id = str(uuid.uuid4())[:8]
+                    SEARCH_CACHE[search_id] = results
+                    text, markup = render_page(results, search_id, page=0)
+                    await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
+                else:
+                    await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{full_song_name}</b>, lekin to'liq mp3 versiyasi topilmadi.", parse_mode="HTML")
+            else:
+                await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi.")
+        else:
+            await status_msg.edit_text("❌ Video topilmadi.")
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Qo'shiqni aniqlashda xatolik: {e}")
 
 
 @router.callback_query(F.data.startswith("page_"))
