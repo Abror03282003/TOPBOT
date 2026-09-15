@@ -1,16 +1,38 @@
 import os
 import uuid
 import subprocess
+import urllib.parse
 import imageio_ffmpeg
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from shazamio import Shazam
 from services.downloader import search_tracks, download_media, download_audio_by_id
+from database import add_user
 
 router = Router()
 
-BOT_USERNAME = "top_botuz_bot"  # Botingiz username'i
+BOT_USERNAME = "top_botuz_bot"
 SEARCH_CACHE = {}
+
+
+def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
+    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar (Lyrics tugmasi bilan)."""
+    encoded_name = urllib.parse.quote(song_name)
+    keyboard = [
+        [
+            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"lyrics_{encoded_name}")
+        ],
+        [
+            InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
+        ],
+        [
+            InlineKeyboardButton(
+                text="Guruhga qo'shish ⤴️", 
+                url=f"https://t.me/{BOT_USERNAME}?startgroup=true"
+            )
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def build_video_keyboard() -> InlineKeyboardMarkup:
@@ -33,7 +55,7 @@ def build_video_keyboard() -> InlineKeyboardMarkup:
 
 
 def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
-    """Sahifa bo'yicha matn va har bir sahifada 1-10 tugmalarni shakllantirish."""
+    """Sahifa bo'yicha matn va tugmalarni shakllantirish."""
     per_page = 10
     total_items = len(results)
     total_pages = (total_items + per_page - 1) // per_page
@@ -50,21 +72,18 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
         
     keyboard = []
     
-    # 1-qator: 1 2 3 4 5
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
         row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
     if row1:
         keyboard.append(row1)
         
-    # 2-qator: 6 7 8 9 10
     if end_idx > start_idx + 5:
         row2 = []
         for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
             row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
         keyboard.append(row2)
         
-    # 3-qator: ⬅️ ❌ ➡️
     prev_page = page - 1 if page > 0 else total_pages - 1
     next_page = page + 1 if page < total_pages - 1 else 0
     
@@ -78,8 +97,54 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
+async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str, str]:
+    """Har qanday media fayldan 20 sekundlik WAV kesib olish va Shazam orqali tanish."""
+    os.makedirs("downloads", exist_ok=True)
+    file_info = await message.bot.get_file(file_id)
+    
+    file_hash = uuid.uuid4().hex[:6]
+    input_file = f"downloads/temp_{file_hash}.file"
+    audio_file = f"downloads/audio_{file_hash}.wav"
+    
+    try:
+        await message.bot.download_file(file_info.file_path, input_file)
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        
+        cmd = [
+            ffmpeg_exe, "-y",
+            "-i", input_file,
+            "-t", "20",
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "44100",
+            "-ac", "2",
+            audio_file
+        ]
+        
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
+            return None, "Audio ishlovida xatolik"
+
+        shazam = Shazam()
+        out = await shazam.recognize(audio_file)
+        track = out.get('track')
+        
+        if track:
+            title = track.get('title', '')
+            subtitle = track.get('subtitle', '')
+            return f"{subtitle} {title}".strip(), None
+        return None, "Qo'shiq aniqlanmadi (Shazam topa olmadi)"
+    finally:
+        if os.path.exists(input_file):
+            os.remove(input_file)
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
+
+
+# Foydalanuvchi havola (link) yuborganda
 @router.message(F.text.startswith("http"))
 async def handle_link(message: Message):
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
     msg = await message.answer("⏳ Video yuklanmoqda...")
     try:
         data = await download_media(message.text)
@@ -102,8 +167,10 @@ async def handle_link(message: Message):
         await msg.edit_text(f"❌ Yuklashda xatolik yuz berdi: {e}")
 
 
-@router.message(F.text)
+# Oddiy matnli qidiruv yuborilganda
+@router.message(F.text & ~F.text.startswith("/"))
 async def handle_search(message: Message):
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
     msg = await message.answer("🔍 Qidirilmoqda...")
     try:
         results = await search_tracks(message.text, limit=30)
@@ -116,13 +183,92 @@ async def handle_search(message: Message):
         
         text, markup = render_page(results, search_id, page=0)
         await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
-    except Exception as e:
-        await msg.edit_text(f"❌ Qidiruvda xatolik yuz berdi.")
+    except Exception:
+        await msg.edit_text("❌ Qidiruvda xatolik yuz berdi.")
+
+
+# Voice (Ovozli xabar), Video Note (Dumaloq video) yoki Audio yuborilganda
+@router.message(F.voice | F.video_note | F.audio)
+async def handle_all_media_types(message: Message):
+    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
+    status_msg = await message.answer("🎧 Tashlangan media eshitib ko'rilmoqda...")
+    
+    file_id = None
+    if message.voice:
+        file_id = message.voice.file_id
+    elif message.video_note:
+        file_id = message.video_note.file_id
+    elif message.audio:
+        file_id = message.audio.file_id
+
+    if not file_id:
+        await status_msg.edit_text("❌ Media topshirishda xatolik.")
+        return
+
+    song_name, err = await process_media_for_shazam(message, file_id)
+    if err or not song_name:
+        await status_msg.edit_text("❌ Afsuski, ushbu audiodan qo'shiq aniqlanmadi.")
+        return
+
+    await status_msg.edit_text(f"🎵 Topilgan qo'shiq: <b>{song_name}</b>\n🔍 To'liq mp3 versiyalari qidirilmoqda...", parse_mode="HTML")
+    
+    results = await search_tracks(song_name, limit=30)
+    if results:
+        search_id = str(uuid.uuid4())[:8]
+        SEARCH_CACHE[search_id] = results
+        text, markup = render_page(results, search_id, page=0)
+        await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{song_name}</b>, lekin mp3 versiyasi topilmadi.", parse_mode="HTML")
+
+
+# Video ostidagi "Qo'shiqni yuklab olish" tugmasi bosilganda
+@router.callback_query(F.data == "identify_and_search_song")
+async def handle_identify_song(call: CallbackQuery):
+    await call.answer("🔍 Qo'shiq aniqlanmoqda...")
+    status_msg = await call.message.answer("🎧 Videodagi qo'shiq eshitib ko'rilmoqda...")
+    
+    if call.message.video:
+        file_id = call.message.video.file_id
+        song_name, err = await process_media_for_shazam(call.message, file_id)
+        
+        if err or not song_name:
+            await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi.")
+            return
+
+        await status_msg.edit_text(f"🎵 Topilgan qo'shiq: <b>{song_name}</b>\n🔍 To'liq versiyalari qidirilmoqda...", parse_mode="HTML")
+        
+        results = await search_tracks(song_name, limit=30)
+        if results:
+            search_id = str(uuid.uuid4())[:8]
+            SEARCH_CACHE[search_id] = results
+            text, markup = render_page(results, search_id, page=0)
+            await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
+        else:
+            await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{song_name}</b>, lekin mp3 versiyasi topilmadi.", parse_mode="HTML")
+    else:
+        await status_msg.edit_text("❌ Video topilmadi.")
+
+
+# Musiqa matni (Lyrics) tugmasi bosilganda
+@router.callback_query(F.data.startswith("lyrics_"))
+async def handle_lyrics_callback(call: CallbackQuery):
+    song_name = urllib.parse.unquote(call.data.replace("lyrics_", ""))
+    await call.answer("📜 Matn tayyorlanmoqda...")
+    
+    query = urllib.parse.quote(f"{song_name} lyrics matni")
+    search_url = f"https://www.google.com/search?q={query}"
+    
+    text = (
+        f"📜 <b>{song_name}</b> - Musiqa matni\n\n"
+        f"<i>To'liq matn va tarjimasini litsenziyalangan manbalardan o'qish uchun quyidagi havola orqali o'ting:</i>\n\n"
+        f"🔗 <a href='{search_url}'>To'liq matnni Google'da ko'rish</a>"
+    )
+    await call.message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "save_to_saved_messages")
 async def handle_save_to_saved(call: CallbackQuery):
-    """Videoni 'Saqlangan xabarlar'ga yuborish."""
     try:
         await call.bot.copy_message(
             chat_id=call.from_user.id,
@@ -132,83 +278,6 @@ async def handle_save_to_saved(call: CallbackQuery):
         await call.answer("✅ 'Saqlangan xabarlar'ga yuborildi!", show_alert=True)
     except Exception:
         await call.answer("❌ Saqlashda xatolik yuz berdi.", show_alert=True)
-
-
-@router.callback_query(F.data == "identify_and_search_song")
-async def handle_identify_song(call: CallbackQuery):
-    """Videodagi qo'shiqni ajratib olish, Shazam orqali tanish va qidiruv natijalarini chiqarish."""
-    await call.answer("🔍 Qo'shiq aniqlanmoqda...")
-    status_msg = await call.message.answer("🎧 Videodagi qo'shiq eshitib ko'rilmoqda...")
-    
-    input_file = None
-    audio_file = None
-    try:
-        if call.message.video:
-            os.makedirs("downloads", exist_ok=True)
-            file_id = call.message.video.file_id
-            file_info = await call.bot.get_file(file_id)
-            
-            file_hash = uuid.uuid4().hex[:6]
-            input_file = f"downloads/temp_{file_hash}.mp4"
-            audio_file = f"downloads/audio_{file_hash}.wav"
-            
-            # Videoni serverga yuklab olish
-            await call.bot.download_file(file_info.file_path, input_file)
-            
-            # imageio-ffmpeg orqali FFmpeg yo'lagini olish
-            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-            
-            # FFmpeg orqali videoning birinchi 20 sekundini WAV (PCM s16le) formatida kesib olish
-            cmd = [
-                ffmpeg_exe, "-y",
-                "-i", input_file,
-                "-t", "20",
-                "-vn",
-                "-acodec", "pcm_s16le",
-                "-ar", "44100",
-                "-ac", "2",
-                audio_file
-            ]
-            
-            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-            if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
-                err_details = process.stderr[-200:] if process.stderr else "Noma'lum FFmpeg xatoligi"
-                await status_msg.edit_text(f"❌ Audioni ajratishda xatolik:\n<code>{err_details}</code>", parse_mode="HTML")
-                return
-
-            # Shazam orqali tanish
-            shazam = Shazam()
-            out = await shazam.recognize(audio_file)
-            
-            track = out.get('track')
-            if track:
-                title = track.get('title', '')
-                subtitle = track.get('subtitle', '')
-                full_song_name = f"{subtitle} {title}".strip()
-                
-                await status_msg.edit_text(f"🎵 Topilgan qo'shiq: <b>{full_song_name}</b>\n🔍 To'liq versiyalari qidirilmoqda...", parse_mode="HTML")
-                
-                # YouTube'dan qidirish
-                results = await search_tracks(full_song_name, limit=30)
-                if results:
-                    search_id = str(uuid.uuid4())[:8]
-                    SEARCH_CACHE[search_id] = results
-                    text, markup = render_page(results, search_id, page=0)
-                    await status_msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
-                else:
-                    await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{full_song_name}</b>, lekin mp3 versiyasi topilmadi.", parse_mode="HTML")
-            else:
-                await status_msg.edit_text("❌ Afsuski, videodagi qo'shiq aniqlanmadi (Shazam topa olmadi).")
-        else:
-            await status_msg.edit_text("❌ Video topilmadi.")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Ishlov berishda xatolik: {e}")
-    finally:
-        if input_file and os.path.exists(input_file):
-            os.remove(input_file)
-        if audio_file and os.path.exists(audio_file):
-            os.remove(audio_file)
 
 
 @router.callback_query(F.data.startswith("page_"))
@@ -249,9 +318,11 @@ async def handle_download_callback(call: CallbackQuery):
         file_path, title = await download_audio_by_id(item['id'])
         if file_path and os.path.exists(file_path):
             audio_file = FSInputFile(file_path)
+            
             await call.message.answer_audio(
                 audio=audio_file,
-                title=title
+                title=title,
+                reply_markup=build_song_keyboard(title)
             )
             os.remove(file_path)
             await status_msg.delete()
