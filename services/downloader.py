@@ -5,6 +5,7 @@ import asyncio
 import logging
 import yt_dlp
 
+# FFmpeg avtomatik aniqlash
 try:
     import imageio_ffmpeg
     FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
@@ -42,7 +43,8 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-async def search_tracks(query: str, limit: int = 30) -> list[dict]:
+async def search_tracks(query: str, limit: int = 10) -> list[dict]:
+    """YouTube'dan qo'shiq qidirish"""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
@@ -77,7 +79,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
-    """MP3 yoki har qanday mavjud audio formatda yuklab olish."""
+    """MP3 formatida audio yuklab olish"""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     ydl_opts = _get_active_opts({
@@ -105,12 +107,12 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
         except Exception as e:
             logging.error(f"Download error: {e}")
 
-        # 1. MP3 fayl hosil bo'lganini tekshirish
+        # 1. MP3 fayl mavjudligini tekshirish
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
         if os.path.exists(expected_mp3):
             return expected_mp3, title
 
-        # 2. Agar MP3 ga o'tmagan bo'lsa (m4a, webm, va h.k.), har qanday mos faylni izlash
+        # 2. Agar MP3 ga o'tmagan bo'lsa, mavjud har qanday formatdagi faylni izlash
         pattern = os.path.join(DOWNLOAD_DIR, f"{video_id}.*")
         files = glob.glob(pattern)
         if files:
@@ -122,6 +124,7 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
 
 
 async def download_media(url: str) -> dict:
+    """YouTube yoki Instagram'dan video yuklab olish"""
     ydl_opts = _get_active_opts({
         'format': 'best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
