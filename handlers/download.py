@@ -6,35 +6,56 @@ from services.downloader import search_tracks, download_media, download_audio_by
 
 router = Router()
 
+# Qidiruv natijalarini vaqtincha saqlash xotirasi
 SEARCH_CACHE = {}
 
 
-def build_search_keyboard(items: list[dict], search_id: str) -> InlineKeyboardMarkup:
-    """1-5, 6-10 va pastki boshqaruv tugmalarini yaratish."""
+def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
+    """Sahifa bo'yicha matn va har bir sahifada 1-10 tugmalarni shakllantirish."""
+    per_page = 10
+    total_items = len(results)
+    total_pages = (total_items + per_page - 1) // per_page
+    
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * per_page
+    end_idx = min(start_idx + per_page, total_items)
+    
+    current_items = results[start_idx:end_idx]
+    
+    # 1. Matnni shakllantirish (1-10, 11-20 va h.k.)
+    text = f"🔍 Topilgan qo'shiqlar (Sahifa {page + 1}/{total_pages}):\n\n"
+    for i, item in enumerate(current_items, start=start_idx + 1):
+        text += f"<b>{i}.</b> {item['title']} <b>{item['duration']}</b>\n"
+        
+    # 2. Raqamli tugmalarni shakllantirish (Doim 1, 2, 3, 4, 5 va 6, 7, 8, 9, 10 bo'ladi)
     keyboard = []
     
-    # 1-qator: 1 2 3 4 5
+    # 1-qator (Sahifadagi birinchi 5 ta tugma: 1 2 3 4 5)
     row1 = []
-    for i in range(1, min(6, len(items) + 1)):
-        row1.append(InlineKeyboardButton(text=str(i), callback_data=f"dl_{search_id}_{i-1}"))
-    keyboard.append(row1)
-    
-    # 2-qator: 6 7 8 9 10
-    if len(items) > 5:
+    for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
+        row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
+    if row1:
+        keyboard.append(row1)
+        
+    # 2-qator (Sahifadagi keyingi 5 ta tugma: 6 7 8 9 10)
+    if end_idx > start_idx + 5:
         row2 = []
-        for i in range(6, len(items) + 1):
-            row2.append(InlineKeyboardButton(text=str(i), callback_data=f"dl_{search_id}_{i-1}"))
+        for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
+            row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
         keyboard.append(row2)
         
-    # 3-qator: ⬅️ ❌ ➡️
+    # 3-qator: Sahifalash va yopish tugmalari (⬅️ ❌ ➡️)
+    prev_page = page - 1 if page > 0 else total_pages - 1
+    next_page = page + 1 if page < total_pages - 1 else 0
+    
     control_row = [
-        InlineKeyboardButton(text="⬅️", callback_data="nop"),
+        InlineKeyboardButton(text="⬅️", callback_data=f"page_{search_id}_{prev_page}"),
         InlineKeyboardButton(text="❌", callback_data=f"close_{search_id}"),
-        InlineKeyboardButton(text="➡️", callback_data="nop")
+        InlineKeyboardButton(text="➡️", callback_data=f"page_{search_id}_{next_page}")
     ]
     keyboard.append(control_row)
     
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+    return text, InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 @router.message(F.text.startswith("http"))
@@ -62,7 +83,7 @@ async def handle_link(message: Message):
 async def handle_search(message: Message):
     msg = await message.answer("🔍 Qidirilmoqda...")
     try:
-        results = await search_tracks(message.text, limit=10)
+        results = await search_tracks(message.text, limit=30)
         if not results:
             await msg.edit_text("❌ Hech narsa topilmadi.")
             return
@@ -70,14 +91,29 @@ async def handle_search(message: Message):
         search_id = str(uuid.uuid4())[:8]
         SEARCH_CACHE[search_id] = results
         
-        text = f"🔍 <b>{message.text}</b>\n\n"
-        for i, item in enumerate(results, 1):
-            text += f"<b>{i}.</b> {item['title']} <b>{item['duration']}</b>\n"
-            
-        markup = build_search_keyboard(results, search_id)
+        text, markup = render_page(results, search_id, page=0)
         await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
         await msg.edit_text(f"❌ Qidiruvda xatolik yuz berdi.")
+
+
+@router.callback_query(F.data.startswith("page_"))
+async def handle_page_callback(call: CallbackQuery):
+    parts = call.data.split("_")
+    search_id = parts[1]
+    target_page = int(parts[2])
+    
+    results = SEARCH_CACHE.get(search_id)
+    if not results:
+        await call.answer("❌ Qidiruv natijasi eskirgan. Qayta qidiring.", show_alert=True)
+        return
+        
+    text, markup = render_page(results, search_id, page=target_page)
+    try:
+        await call.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except Exception:
+        pass
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith("dl_"))
@@ -118,8 +154,3 @@ async def handle_close_callback(call: CallbackQuery):
         del SEARCH_CACHE[search_id]
     await call.message.delete()
     await call.answer("O'chirildi")
-
-
-@router.callback_query(F.data == "nop")
-async def handle_nop_callback(call: CallbackQuery):
-    await call.answer()
