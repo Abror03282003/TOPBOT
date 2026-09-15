@@ -28,6 +28,9 @@ def _download_sync(url: str, audio_only: bool = False) -> str:
             }],
             "quiet": True,
             "no_warnings": True,
+            "extractor_args": {
+                "youtube": {"player_client": ["android", "web"]}
+            },
         }
     else:
         ydl_opts = {
@@ -36,6 +39,9 @@ def _download_sync(url: str, audio_only: bool = False) -> str:
             "quiet": True,
             "no_warnings": True,
             "merge_output_format": "mp4",
+            "extractor_args": {
+                "youtube": {"player_client": ["android", "web"]}
+            },
         }
 
     try:
@@ -62,6 +68,9 @@ def _search_sync(query: str, limit: int = 10) -> list:
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
+        "extractor_args": {
+            "youtube": {"player_client": ["android", "web"]}
+        },
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
