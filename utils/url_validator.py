@@ -1,35 +1,21 @@
 import re
 
+# Havola (URL) formatini va ijtimoiy tarmoq havolalarini tekshirish uchun pattern
 URL_PATTERN = re.compile(
-    r"(https?://)?(www\.)?"
-    r"(instagram\.com|tiktok\.com|youtube\.com|youtu\.be|"
-    r"facebook\.com|fb\.watch|twitter\.com|x\.com)/\S+",
-    re.IGNORECASE,
+    r'^(https?://)?'  # http:// yoki https://
+    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domen nomi
+    r'localhost|'  # localhost
+    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # IP manzil
+    r'(?::\d+)?'  # port
+    r'(?:/?|[/?]\S+)$', re.IGNORECASE
 )
 
-
-def extract_url(text: str) -> str | None:
-    if not text:
-        return None
-    match = URL_PATTERN.search(text)
-    if not match:
-        return None
-    url = match.group(0)
-    if not url.startswith("http"):
-        url = "https://" + url
-    return url
-
-
-def detect_platform(url: str) -> str:
-    url = url.lower()
-    if "instagram.com" in url:
-        return "Instagram"
-    if "tiktok.com" in url:
-        return "TikTok"
-    if "youtube.com" in url or "youtu.be" in url:
-        return "YouTube"
-    if "facebook.com" in url or "fb.watch" in url:
-        return "Facebook"
-    if "twitter.com" in url or "x.com" in url:
-        return "Twitter/X"
-    return "Noma'lum"
+def is_valid_url(url: str) -> bool:
+    """
+    Kiritilgan matn to'g'ri URL havola ekanligini tekshiradi.
+    Agar havola bo'lsa True, aks holda False qaytaradi.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    
+    return bool(URL_PATTERN.match(url.strip()))
