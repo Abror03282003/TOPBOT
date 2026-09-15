@@ -13,14 +13,15 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
+# YouTube bot-detection tizimidan o'tuvchi kengaytirilgan sozlamalar
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'nocheckcertificate': True,
+    'impersonate': 'chrome',  # Browser TLS fingerprinting simulyatsiyasi
     'extractor_args': {
         'youtube': {
-            'player_client': ['ios', 'android', 'mweb'],
+            'player_client': ['ios', 'mweb', 'android', 'tv'],
             'player_skip': ['configs', 'webpage']
         }
     }
@@ -60,9 +61,9 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
         res = await asyncio.to_thread(_search)
         if res:
             return res
-        raise Exception("YouTube empty results")
+        raise Exception("YouTube search empty")
     except Exception:
-        # YouTube blok bersa SoundCloud orqali qidiradi
+        # YouTube javob bermaganda SoundCloud orqali qidiruv
         ydl_opts['default_search'] = f'scsearch{limit}'
         def _sc_search():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -107,7 +108,33 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
             file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
             return file_path, title
 
-    return await asyncio.to_thread(_download)
+    try:
+        return await asyncio.to_thread(_download)
+    except Exception as e:
+        # YouTube mutlaq blok berganda SoundCloud qidiruvi orqali audio yuklash
+        if "Sign in to confirm" in str(e) and not video_id_or_url.startswith("http"):
+            sc_opts = {
+                **BASE_YDL_OPTS,
+                'format': 'bestaudio/best',
+                'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            }
+            def _sc_fallback_download():
+                with yt_dlp.YoutubeDL(sc_opts) as ydl:
+                    info = ydl.extract_info(f"scsearch1:{video_id_or_url}", download=True)
+                    if info and 'entries' in info and info['entries']:
+                        entry = info['entries'][0]
+                        title = entry.get('title', 'Audio Track')
+                        file_id = entry.get('id', 'audio')
+                        file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
+                        return file_path, title
+                    raise e
+            return await asyncio.to_thread(_sc_fallback_download)
+        raise e
 
 
 async def download_media(url: str) -> dict:
