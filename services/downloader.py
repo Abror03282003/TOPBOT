@@ -37,7 +37,6 @@ def _get_active_opts(extra_opts: dict) -> dict:
 
 
 def format_duration(seconds: int) -> str:
-    """Saniyalarni MM:SS formatiga o'tkazadi."""
     if not seconds:
         return "0:00"
     minutes = int(seconds) // 60
@@ -46,14 +45,13 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    """YouTube bo'yicha 30 tagacha qo'shiqni qidiradi."""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios'],
-                'player_skip': ['configs', 'webpage']
+                'player_client': ['android', 'web'],
+                'player_skip': ['configs']
             }
         }
     })
@@ -81,15 +79,16 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
-    """MP3 formatida yuklab olish."""
+    """MP3 formatida yuklab olish (xatoliklarsiz va moslashuvchan format bilan)."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
     ydl_opts = _get_active_opts({
-        'format': 'bestaudio/best',
+        # FORMAT MOSLASHUVCHAN QILINDI: bestaudio bolmasa, oddiy eng past sifatli videodan bo'lsa ham audioni ajratadi
+        'format': 'bestaudio/bestaudio*/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
+                'player_client': ['android', 'web']
             }
         },
         'postprocessors': [{
@@ -107,21 +106,20 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
-                # SIZNING KODINGIZDAGI XATOLIK SHU YERDA HAL QILINDI:
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
                     file_id = info.get('id', video_id)
                 else:
-                    logging.error(f"yt-dlp info ololmadi (YouTube bloklashi mumkin): {url}")
+                    logging.error(f"yt-dlp info ololmadi: {url}")
         except Exception as e:
             logging.error(f"Download error: {e}")
 
-        # Tayyor mp3 faylini qidiramiz
+        # Tayyor mp3 faylini tekshiramiz
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
         if os.path.exists(expected_mp3):
             return expected_mp3, title
 
-        # Boshqa kengaytmali fayl bo'lsa uni topamiz
+        # MP3 bo'lmasa, har qanday hosil bo'lgan media faylini olamiz
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_id}.*")
         files = glob.glob(pattern)
         if files:
@@ -133,7 +131,6 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
 
 
 async def download_media(url: str) -> dict:
-    """Instagram va YouTube videolarni yuklab olish."""
     ydl_opts = _get_active_opts({
         'format': 'best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
