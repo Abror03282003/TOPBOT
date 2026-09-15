@@ -27,8 +27,8 @@ if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
     BASE_YDL_OPTS['cookiefile'] = COOKIES_PATH
 
 
-async def search_tracks(query: str, limit: int = 10) -> list[dict]:
-    """SoundCloud va YouTube bo'yicha qidiruv."""
+async def search_tracks(query: str, limit: int = 5) -> list[dict]:
+    """SoundCloud va YouTube bo'yicha qidiruv (To'g'rilangan ID formati bilan)."""
     sc_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
@@ -42,8 +42,10 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
             if res and 'entries' in res:
                 for entry in res['entries']:
                     if entry:
+                        # SoundCloud ID o'rniga to'g'ri havola yoki ID shakllantirish
+                        track_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
                         results.append({
-                            'id': entry.get('url') or entry.get('id'),
+                            'id': track_url,
                             'title': entry.get('title', 'Unknown Title'),
                             'duration': entry.get('duration', 0),
                             'uploader': entry.get('uploader', 'Unknown Artist')
@@ -78,11 +80,11 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
                         })
             return results
 
-    return await asyncio-to_thread(_search_yt) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _search_yt)
+    return await asyncio.to_thread(_search_yt)
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
-    """Qo'shiqni MP3 formatida yuklab olish."""
+    """Audio (MP3) yuklab olish."""
     if video_id_or_url.startswith("http"):
         url = video_id_or_url
     else:
@@ -111,7 +113,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
 
 
 async def download_media(url: str) -> dict:
-    """Instagram va YouTube videolarni MP4 formatida yuklab olish."""
+    """Video yuklab olish."""
     ydl_opts = {
         **BASE_YDL_OPTS,
         'format': 'best[ext=mp4]/best',
