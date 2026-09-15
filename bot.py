@@ -3,7 +3,7 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 from database import init_db
-from handlers import download, admin
+from handlers import download, admin, shazam  # shazam handler import qilindi
 
 # Environment orqali token va cookies sozlamasini olish
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -23,9 +23,10 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # Routerlarni tartib bo'yicha ulash (Admin router birinchi)
+    # Routerlarni tartib bo'yicha ulash
     dp.include_router(admin.router)
-    dp.include_router(download.router)
+    dp.include_router(shazam.router)   # Shazam birinchi ovozli/videoni ushlaydi
+    dp.include_router(download.router) # Qolgan havola va matnli qidiruvlar uchun
 
     logging.info("Bot muvaffaqiyatli ishga tushdi!")
     await dp.start_polling(bot)
