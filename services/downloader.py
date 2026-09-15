@@ -8,7 +8,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg") or "/root/.nix-profile/bin/ffmpeg"
 
-# YouTube server blokirovkasidan o'tuvchi maxsus API sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
