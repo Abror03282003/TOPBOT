@@ -7,24 +7,27 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg") or "/root/.nix-profile/bin/ffmpeg"
+COOKIES_PATH = "cookies.txt"
 
+# Standartyt-dlp sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'mweb', 'android'],
-            'player_skip': ['configs', 'webpage']
-        }
-    },
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'nocheckcertificate': True,
 }
 
+# FFmpeg biriktirish
 if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
+# Cookies mavjud bo'lsa biriktirish
+if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
+    BASE_YDL_OPTS['cookiefile'] = COOKIES_PATH
+
+
 async def search_tracks(query: str, limit: int = 10) -> list[dict]:
+    """Qo'shiq nomi bo'yicha qidirish (YouTube va SoundCloud fallbacks)."""
     ydl_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
@@ -46,10 +49,34 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
                         })
             return results
 
-    return await asyncio.to_thread(_search)
+    try:
+        return await asyncio.to_thread(_search)
+    except Exception:
+        # YouTube blok bersa SoundCloud bo'yicha zaxira qidiruvi
+        ydl_opts['default_search'] = f'scsearch{limit}'
+        def _sc_search():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+                results = []
+                if res and 'entries' in res:
+                    for entry in res['entries']:
+                        if entry:
+                            results.append({
+                                'id': entry.get('url') or entry.get('id'),
+                                'title': entry.get('title', 'Unknown Title'),
+                                'duration': entry.get('duration', 0),
+                                'uploader': entry.get('uploader', 'Unknown Artist')
+                            })
+                return results
+        return await asyncio.to_thread(_sc_search)
+
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
-    url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
+    """Audio (MP3) yuklab olish."""
+    if video_id_or_url.startswith("http"):
+        url = video_id_or_url
+    else:
+        url = f"https://www.youtube.com/watch?v={video_id_or_url}"
     
     ydl_opts = {
         **BASE_YDL_OPTS,
@@ -66,13 +93,15 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'Audio Track')
-            file_id = info.get('id')
+            file_id = info.get('id', 'audio')
             file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
             return file_path, title
 
     return await asyncio.to_thread(_download)
 
+
 async def download_media(url: str) -> dict:
+    """Instagram va YouTube videolarini yuklab olish."""
     ydl_opts = {
         **BASE_YDL_OPTS,
         'format': 'best[ext=mp4]/best',
