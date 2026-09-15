@@ -2,4 +2,3 @@ aiogram
 yt-dlp
 imageio-ffmpeg
 shazamio
-pyaudioop
