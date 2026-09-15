@@ -1,109 +1,83 @@
 import os
-import uuid
 import asyncio
 import yt_dlp
 
-from config import DOWNLOADS_DIR
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+# Common yt-dlp options
+BASE_YDL_OPTS = {
+    'quiet': True,
+    'no_warnings': True,
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+}
 
+async def search_tracks(query: str, limit: int = 10) -> list[dict]:
+    """Qo'shiq nomiga ko'ra topilgan treklarni ro'yxat qilib qaytaradi."""
+    ydl_opts = {
+        **BASE_YDL_OPTS,
+        'extract_flat': True,
+        'default_search': f'ytsearch{limit}',
+    }
+    
+    def _search():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            results = []
+            if 'entries' in res:
+                for entry in res['entries']:
+                    results.append({
+                        'id': entry.get('id'),
+                        'title': entry.get('title', 'Unknown Title'),
+                        'duration': entry.get('duration', 0),
+                        'uploader': entry.get('uploader', 'Unknown Artist')
+                    })
+            return results
 
-class DownloadError(Exception):
-    pass
+    return await asyncio.to_thread(_search)
 
+async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
+    """Video/Qo'shiq ID yoki URL bo'yicha MP3 yuklab beradi."""
+    url = video_id_or_url if video_id_or_url.startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
+    
+    ydl_opts = {
+        **BASE_YDL_OPTS,
+        'format': 'bestaudio/best',
+        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
 
-def _download_sync(url: str, audio_only: bool = False) -> str:
-    """yt-dlp orqali faylni sinxron ravishda yuklaydi. Fayl yo'lini qaytaradi."""
-    file_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOADS_DIR, f"{file_id}.%(ext)s")
+    def _download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Audio Track')
+            file_id = info.get('id')
+            file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
+            return file_path, title
 
-    if audio_only:
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": output_template,
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-            "quiet": True,
-            "no_warnings": True,
-            "extractor_args": {
-                "youtube": {"player_client": ["android", "web"]}
-            },
-        }
-    else:
-        ydl_opts = {
-            "format": "best[filesize<50M]/best",
-            "outtmpl": output_template,
-            "quiet": True,
-            "no_warnings": True,
-            "merge_output_format": "mp4",
-            "extractor_args": {
-                "youtube": {"player_client": ["android", "web"]}
-            },
-        }
+    return await asyncio.to_thread(_download)
 
-    try:
+async def download_media(url: str) -> dict:
+    """Instagram yoki YouTube'dan videoni yuklab beradi."""
+    ydl_opts = {
+        **BASE_YDL_OPTS,
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'max_filesize': 50 * 1024 * 1024, # Telegram limits (50MB)
+    }
+
+    def _download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            if audio_only:
-                filename = os.path.splitext(filename)[0] + ".mp3"
-            return filename
-    except yt_dlp.utils.DownloadError as e:
-        raise DownloadError(str(e))
+            return {
+                "file_path": filename,
+                "title": info.get("title", "Video"),
+                "id": info.get("id")
+            }
 
-
-async def download_media(url: str, audio_only: bool = False) -> str:
-    """Async wrapper - yt-dlp bloklovchi operatsiyani alohida threadda bajaradi."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _download_sync, url, audio_only)
-
-
-def _search_sync(query: str, limit: int = 10) -> list:
-    """YouTube'dan qo'shiq nomi bo'yicha qidiradi, hech narsani yuklamaydi."""
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": "in_playlist",
-        "skip_download": True,
-        "extractor_args": {
-            "youtube": {"player_client": ["android", "web"]}
-        },
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-        entries = info.get("entries", []) if info else []
-
-    results = []
-    for entry in entries:
-        if not entry:
-            continue
-        duration = entry.get("duration")
-        duration_str = ""
-        if duration:
-            minutes = int(duration) // 60
-            seconds = int(duration) % 60
-            duration_str = f"{minutes}:{seconds:02d}"
-        results.append({
-            "id": entry.get("id"),
-            "title": entry.get("title", "Noma'lum"),
-            "duration": duration_str,
-        })
-    return results
-
-
-async def search_media(query: str, limit: int = 10) -> list:
-    """Async wrapper - qidiruvni alohida threadda bajaradi."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _search_sync, query, limit)
-
-
-def cleanup_file(filepath: str) -> None:
-    """Yuborilgan faylni serverdan o'chirish."""
-    try:
-        if filepath and os.path.exists(filepath):
-            os.remove(filepath)
-    except OSError:
-        pass
+    return await asyncio.to_thread(_download)
