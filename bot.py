@@ -1,3 +1,9 @@
+import os
+
+# Railway Variables'dagi cookies matnidan fayl yaratish
+if os.getenv("YOUTUBE_COOKIES"):
+    with open("cookies.txt", "w", encoding="utf-8") as f:
+        f.write(os.getenv("YOUTUBE_COOKIES"))
 import asyncio
 import logging
 
