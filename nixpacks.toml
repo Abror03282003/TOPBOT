@@ -1,5 +1,8 @@
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+nixPkgs = ["python3", "ffmpeg"]
 
 [phases.build]
 cmds = ["pip install --upgrade pip", "pip install -U yt-dlp", "pip install -r requirements.txt"]
+
+[start]
+cmd = "python bot.py"
