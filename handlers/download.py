@@ -6,7 +6,6 @@ from services.downloader import search_tracks, download_media, download_audio_by
 
 router = Router()
 
-# Qidiruv natijalarini saqlash uchun
 SEARCH_CACHE = {}
 
 
@@ -68,11 +67,9 @@ async def handle_search(message: Message):
             await msg.edit_text("❌ Hech narsa topilmadi.")
             return
         
-        # Har bir qidiruv uchun ID yaratamiz
         search_id = str(uuid.uuid4())[:8]
         SEARCH_CACHE[search_id] = results
         
-        # 2-rasmdagi kabi matn formatini shakllantirish
         text = f"🔍 <b>{message.text}</b>\n\n"
         for i, item in enumerate(results, 1):
             text += f"<b>{i}.</b> {item['title']} <b>{item['duration']}</b>\n"
@@ -80,7 +77,7 @@ async def handle_search(message: Message):
         markup = build_search_keyboard(results, search_id)
         await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except Exception as e:
-        await msg.edit_text(f"❌ Qidiruvda xatolik: {e}")
+        await msg.edit_text(f"❌ Qidiruvda xatolik yuz berdi.")
 
 
 @router.callback_query(F.data.startswith("dl_"))
