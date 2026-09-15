@@ -1,2 +1,3 @@
-aiogram==3.13.1
-yt-dlp>=2025.9.1
+aiogram>=3.0.0
+yt-dlp --upgrade
+python-dotenv
