@@ -38,8 +38,8 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-async def search_tracks(query: str, limit: int = 10) -> list[dict]:
-    """YouTube / YouTube Music orqali 10 ta aniq qo'shiqni qidiradi."""
+async def search_tracks(query: str, limit: int = 30) -> list[dict]:
+    """YouTube bo'yicha 30 tagacha qo'shiqni qidiradi."""
     search_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
@@ -53,7 +53,6 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
     }
 
     def _search():
-        # Avval ytsearch bilan qidirib ko'radi
         with yt_dlp.YoutubeDL(search_opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             results = []
@@ -76,7 +75,6 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
     except Exception as e:
         print(f"Search error: {e}")
         return []
-
 
 async def download_audio_by_id(video_id: str) -> tuple[str, str]:
     """MP3 formatida yuklab olish."""
