@@ -13,17 +13,13 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
+# Anti-bot va blokirovkaga tushmaslik sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
-    'impersonate': 'chrome',
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'mweb', 'android'],
-            'player_skip': ['configs', 'webpage']
-        }
-    }
+    'ignoreerrors': True,
+    'geo_bypass': True,
 }
 
 if FFMPEG_PATH:
@@ -37,21 +33,28 @@ def format_duration(seconds: int) -> str:
     """Saniyalarni MM:SS formatiga o'tkazadi."""
     if not seconds:
         return "0:00"
-    minutes = seconds // 60
-    secs = seconds % 60
+    minutes = int(seconds) // 60
+    secs = int(seconds) % 60
     return f"{minutes}:{secs:02d}"
 
 
 async def search_tracks(query: str, limit: int = 10) -> list[dict]:
-    """YouTube bo'yicha 10 ta aniq qo'shiqni va vaqtini qidiradi."""
-    yt_opts = {
+    """YouTube / YouTube Music orqali 10 ta aniq qo'shiqni qidiradi."""
+    search_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
-        'default_search': f'ytsearch{limit}',
+        'skip_download': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios'],
+                'player_skip': ['configs', 'webpage']
+            }
+        }
     }
 
-    def _search_yt():
-        with yt_dlp.YoutubeDL(yt_opts) as ydl:
+    def _search():
+        # Avval ytsearch bilan qidirib ko'radi
+        with yt_dlp.YoutubeDL(search_opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             results = []
             if res and 'entries' in res:
@@ -65,7 +68,14 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
                         })
             return results
 
-    return await asyncio.to_thread(_search_yt)
+    try:
+        if hasattr(asyncio, 'to_thread'):
+            return await asyncio.to_thread(_search)
+        else:
+            return await asyncio.get_event_loop().run_in_executor(None, _search)
+    except Exception as e:
+        print(f"Search error: {e}")
+        return []
 
 
 async def download_audio_by_id(video_id: str) -> tuple[str, str]:
@@ -76,6 +86,11 @@ async def download_audio_by_id(video_id: str) -> tuple[str, str]:
         **BASE_YDL_OPTS,
         'format': 'bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb']
+            }
+        },
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
@@ -91,7 +106,10 @@ async def download_audio_by_id(video_id: str) -> tuple[str, str]:
             file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
             return file_path, title
 
-    return await asyncio-to_thread(_download) if hasattr(asyncio, 'to_thread') else await asyncio.get_event_loop().run_in_executor(None, _download)
+    if hasattr(asyncio, 'to_thread'):
+        return await asyncio.to_thread(_download)
+    else:
+        return await asyncio.get_event_loop().run_in_executor(None, _download)
 
 
 async def download_media(url: str) -> dict:
@@ -113,4 +131,7 @@ async def download_media(url: str) -> dict:
                 "id": info.get("id")
             }
 
-    return await asyncio-to_thread(_download) if hasattr(asyncio, 'to_thread') else await asyncio.get_event_loop().run_in_executor(None, _download)
+    if hasattr(asyncio, 'to_thread'):
+        return await asyncio.to_thread(_download)
+    else:
+        return await asyncio.get_event_loop().run_in_executor(None, _download)
