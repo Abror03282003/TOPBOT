@@ -13,11 +13,18 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
+# YouTube va YouTube Music uchun universal anti-bot sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'impersonate': 'chrome',
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['ios', 'mweb', 'android'],
+            'player_skip': ['configs', 'webpage']
+        }
+    }
 }
 
 if FFMPEG_PATH:
@@ -28,24 +35,23 @@ if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
 
 
 async def search_tracks(query: str, limit: int = 5) -> list[dict]:
-    """SoundCloud va YouTube bo'yicha qidiruv (To'g'rilangan ID formati bilan)."""
-    sc_opts = {
+    """Qo'shiqlarni YouTube Music va YouTube bo'yicha aniq va to'g'ri qidirish."""
+    # 1. Avval YouTube Music orqali aniq MP3 treklarni qidiradi (ytmsearch)
+    ytm_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
-        'default_search': f'scsearch{limit}',
+        'default_search': f'ytmsearch{limit}',
     }
     
-    def _search_sc():
-        with yt_dlp.YoutubeDL(sc_opts) as ydl:
-            res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+    def _search_ytm():
+        with yt_dlp.YoutubeDL(ytm_opts) as ydl:
+            res = ydl.extract_info(f"ytmsearch{limit}:{query}", download=False)
             results = []
             if res and 'entries' in res:
                 for entry in res['entries']:
-                    if entry:
-                        # SoundCloud ID o'rniga to'g'ri havola yoki ID shakllantirish
-                        track_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+                    if entry and entry.get('id'):
                         results.append({
-                            'id': track_url,
+                            'id': entry.get('id'),
                             'title': entry.get('title', 'Unknown Title'),
                             'duration': entry.get('duration', 0),
                             'uploader': entry.get('uploader', 'Unknown Artist')
@@ -53,25 +59,26 @@ async def search_tracks(query: str, limit: int = 5) -> list[dict]:
             return results
 
     try:
-        res = await asyncio.to_thread(_search_sc)
-        if res:
-            return res
+        results = await asyncio.to_thread(_search_ytm)
+        if results:
+            return results
     except Exception:
         pass
 
+    # 2. Agar YouTube Music bo'lmasa, oddiy YouTube qidiruviga o'tadi
     yt_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
         'default_search': f'ytsearch{limit}',
     }
-    
+
     def _search_yt():
         with yt_dlp.YoutubeDL(yt_opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             results = []
             if res and 'entries' in res:
                 for entry in res['entries']:
-                    if entry:
+                    if entry and entry.get('id'):
                         results.append({
                             'id': entry.get('id'),
                             'title': entry.get('title', 'Unknown Title'),
@@ -84,7 +91,7 @@ async def search_tracks(query: str, limit: int = 5) -> list[dict]:
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
-    """Audio (MP3) yuklab olish."""
+    """YouTube / YouTube Music orqali MP3 audio yuklab olish."""
     if video_id_or_url.startswith("http"):
         url = video_id_or_url
     else:
@@ -113,7 +120,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
 
 
 async def download_media(url: str) -> dict:
-    """Video yuklab olish."""
+    """Instagram va YouTube videolarni MP4 formatida yuklab olish."""
     ydl_opts = {
         **BASE_YDL_OPTS,
         'format': 'best[ext=mp4]/best',
