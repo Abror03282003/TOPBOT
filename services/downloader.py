@@ -13,8 +13,14 @@ COOKIES_PATH = "cookies.txt"
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'nocheckcertificate': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios', 'mweb'],
+            'player_skip': ['configs', 'webpage']
+        }
+    }
 }
 
 # FFmpeg mavjud bo'lsa biriktirish
@@ -50,7 +56,10 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
             return results
 
     try:
-        return await asyncio.to_thread(_search)
+        res = await asyncio.to_thread(_search)
+        if res:
+            return res
+        raise Exception("YouTube empty results")
     except Exception:
         # YouTube blok berganda SoundCloud orqali qidiruv
         ydl_opts['default_search'] = f'scsearch{limit}'
@@ -97,7 +106,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
             file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
             return file_path, title
 
-    return await asyncio-to_thread(_download)
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
@@ -120,3 +129,4 @@ async def download_media(url: str) -> dict:
             }
 
     return await asyncio.to_thread(_download)
+    
