@@ -8,15 +8,15 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 FFMPEG_PATH = shutil.which("ffmpeg") or "/root/.nix-profile/bin/ffmpeg"
 
-# YouTube blokirovkalaridan o'tish uchun optimallashtirilgan sozlamalar
+# YouTube server blokirovkasidan o'tuvchi maxsus API sozlamalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'ios', 'web'],
-            'skip': ['webpage', 'hls']
+            'player_client': ['ios', 'mweb', 'android'],
+            'player_skip': ['configs', 'webpage']
         }
     },
     'nocheckcertificate': True,
