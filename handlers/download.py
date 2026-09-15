@@ -150,36 +150,27 @@ async def handle_identify_song(call: CallbackQuery):
             
             file_hash = uuid.uuid4().hex[:6]
             input_file = f"downloads/temp_{file_hash}.mp4"
-            audio_file = f"downloads/audio_{file_hash}.m4a"
+            audio_file = f"downloads/audio_{file_hash}.wav"
             
             # Videoni serverga yuklab olish
             await call.bot.download_file(file_info.file_path, input_file)
             
-            # imageio-ffmpeg orqali aniq FFmpeg yo'lagini topamiz
+            # imageio-ffmpeg orqali FFmpeg yo'lagini olish
             ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
             
-            # 1-urinish: Video ichidagi audioni to'g'ridan-to'g'ri ko'chirish (-acodec copy)
+            # FFmpeg orqali videoning birinchi 20 sekundini WAV (PCM s16le) formatida kesib olish
             cmd = [
                 ffmpeg_exe, "-y",
                 "-i", input_file,
+                "-t", "20",
                 "-vn",
-                "-acodec", "copy",
+                "-acodec", "pcm_s16le",
+                "-ar", "44100",
+                "-ac", "2",
                 audio_file
             ]
-            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             
-            # 2-urinish: Agar copy o'xshamasa AAC ga qayta kodlash
-            if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
-                cmd_fallback = [
-                    ffmpeg_exe, "-y",
-                    "-i", input_file,
-                    "-vn",
-                    "-acodec", "aac",
-                    "-ar", "44100",
-                    "-ac", "2",
-                    audio_file
-                ]
-                process = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             if process.returncode != 0 or not os.path.exists(audio_file) or os.path.getsize(audio_file) == 0:
                 err_details = process.stderr[-200:] if process.stderr else "Noma'lum FFmpeg xatoligi"
