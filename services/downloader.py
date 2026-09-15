@@ -57,7 +57,6 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
     except Exception:
         pass
 
-    # SoundCloud bo'lmasa YouTube
     yt_opts = {
         **BASE_YDL_OPTS,
         'extract_flat': True,
@@ -79,11 +78,40 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
                         })
             return results
 
-    return await asyncio.to_thread(_search_yt)
+    return await asyncio-to_thread(_search_yt) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _search_yt)
+
+
+async def download_audio_by_id(video_id_or_url: str) -> tuple[str, str]:
+    """Qo'shiqni MP3 formatida yuklab olish."""
+    if video_id_or_url.startswith("http"):
+        url = video_id_or_url
+    else:
+        url = f"https://www.youtube.com/watch?v={video_id_or_url}"
+    
+    ydl_opts = {
+        **BASE_YDL_OPTS,
+        'format': 'bestaudio/best',
+        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+
+    def _download():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Audio Track')
+            file_id = info.get('id', 'audio')
+            file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
+            return file_path, title
+
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
-    """Instagram, YouTube va boshqa platformalardan video yuklash."""
+    """Instagram va YouTube videolarni MP4 formatida yuklab olish."""
     ydl_opts = {
         **BASE_YDL_OPTS,
         'format': 'best[ext=mp4]/best',
