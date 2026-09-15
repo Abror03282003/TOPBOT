@@ -1,6 +1,8 @@
 import os
+import glob
 import shutil
 import asyncio
+import logging
 import yt_dlp
 
 try:
@@ -25,8 +27,13 @@ BASE_YDL_OPTS = {
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
-if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
-    BASE_YDL_OPTS['cookiefile'] = COOKIES_PATH
+
+def _get_active_opts(extra_opts: dict) -> dict:
+    """Cookies fayli borligini dinamik tekshirib, opsiyalarni beradi."""
+    opts = {**BASE_YDL_OPTS, **extra_opts}
+    if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
+        opts['cookiefile'] = COOKIES_PATH
+    return opts
 
 
 def format_duration(seconds: int) -> str:
@@ -40,8 +47,7 @@ def format_duration(seconds: int) -> str:
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     """YouTube bo'yicha 30 tagacha qo'shiqni qidiradi."""
-    search_opts = {
-        **BASE_YDL_OPTS,
+    search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
@@ -50,38 +56,35 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                 'player_skip': ['configs', 'webpage']
             }
         }
-    }
+    })
 
     def _search():
-        with yt_dlp.YoutubeDL(search_opts) as ydl:
-            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            results = []
-            if res and 'entries' in res:
-                for entry in res['entries']:
-                    if entry and entry.get('id'):
-                        results.append({
-                            'id': entry.get('id'),
-                            'title': entry.get('title', 'Unknown Title'),
-                            'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader', 'Unknown Artist')
-                        })
-            return results
+        try:
+            with yt_dlp.YoutubeDL(search_opts) as ydl:
+                res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                results = []
+                if res and 'entries' in res and res['entries']:
+                    for entry in res['entries']:
+                        if entry and entry.get('id'):
+                            results.append({
+                                'id': entry.get('id'),
+                                'title': entry.get('title', 'Unknown Title'),
+                                'duration': format_duration(entry.get('duration', 0)),
+                                'uploader': entry.get('uploader', 'Unknown Artist')
+                            })
+                return results
+        except Exception as e:
+            logging.error(f"Search error: {e}")
+            return []
 
-    try:
-        if hasattr(asyncio, 'to_thread'):
-            return await asyncio.to_thread(_search)
-        else:
-            return await asyncio.get_event_loop().run_in_executor(None, _search)
-    except Exception as e:
-        print(f"Search error: {e}")
-        return []
+    return await asyncio.to_thread(_search)
 
-async def download_audio_by_id(video_id: str) -> tuple[str, str]:
+
+async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
     """MP3 formatida yuklab olish."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     
-    ydl_opts = {
-        **BASE_YDL_OPTS,
+    ydl_opts = _get_active_opts({
         'format': 'bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'extractor_args': {
@@ -94,42 +97,63 @@ async def download_audio_by_id(video_id: str) -> tuple[str, str]:
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-    }
+    })
 
     def _download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Audio Track')
-            file_id = info.get('id', 'audio')
-            file_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
-            return file_path, title
+        title = "Audio Track"
+        file_id = video_id
 
-    if hasattr(asyncio, 'to_thread'):
-        return await asyncio.to_thread(_download)
-    else:
-        return await asyncio.get_event_loop().run_in_executor(None, _download)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                # SIZNING KODINGIZDAGI XATOLIK SHU YERDA HAL QILINDI:
+                if info and isinstance(info, dict):
+                    title = info.get('title', 'Audio Track')
+                    file_id = info.get('id', video_id)
+                else:
+                    logging.error(f"yt-dlp info ololmadi (YouTube bloklashi mumkin): {url}")
+        except Exception as e:
+            logging.error(f"Download error: {e}")
+
+        # Tayyor mp3 faylini qidiramiz
+        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
+        if os.path.exists(expected_mp3):
+            return expected_mp3, title
+
+        # Boshqa kengaytmali fayl bo'lsa uni topamiz
+        pattern = os.path.join(DOWNLOAD_DIR, f"{file_id}.*")
+        files = glob.glob(pattern)
+        if files:
+            return files[0], title
+
+        return None, title
+
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
     """Instagram va YouTube videolarni yuklab olish."""
-    ydl_opts = {
-        **BASE_YDL_OPTS,
+    ydl_opts = _get_active_opts({
         'format': 'best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'max_filesize': 50 * 1024 * 1024,
-    }
+    })
 
     def _download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            return {
-                "file_path": filename,
-                "title": info.get("title", "Video"),
-                "id": info.get("id")
-            }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info and isinstance(info, dict):
+                    filename = ydl.prepare_filename(info)
+                    return {
+                        "file_path": filename,
+                        "title": info.get("title", "Video"),
+                        "id": info.get("id")
+                    }
+        except Exception as e:
+            logging.error(f"Media download error: {e}")
 
-    if hasattr(asyncio, 'to_thread'):
-        return await asyncio.to_thread(_download)
-    else:
-        return await asyncio.get_event_loop().run_in_executor(None, _download)
+        return {"file_path": None, "title": "Video", "id": None}
+
+    return await asyncio.to_thread(_download)
