@@ -6,11 +6,16 @@ import logging
 import urllib.parse
 import yt_dlp
 
+# FFmpeg va FFprobe manzillarini aniqlash
 try:
     import imageio_ffmpeg
     FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+    FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
+    if not os.path.exists(FFPROBE_PATH):
+        FFPROBE_PATH = FFMPEG_PATH
 except Exception:
-    FFMPEG_PATH = shutil.which("ffmpeg") or shutil.which("ffprobe") or "/usr/bin/ffmpeg"
+    FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+    FFPROBE_PATH = shutil.which("ffprobe") or FFMPEG_PATH
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -28,7 +33,19 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
 
+def _ensure_cookies_file():
+    """Railway muhitidagi YOUTUBE_COOKIES o'zgaruvchisidan cookies.txt faylini yaratish."""
+    cookies_env = os.environ.get("YOUTUBE_COOKIES")
+    if cookies_env:
+        try:
+            with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+                f.write(cookies_env.strip())
+        except Exception as e:
+            logging.error(f"Cookies faylini yozishda xatolik: {e}")
+
+
 def _get_active_opts(extra_opts: dict) -> dict:
+    _ensure_cookies_file()
     opts = {**BASE_YDL_OPTS, **extra_opts}
     if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
         opts['cookiefile'] = COOKIES_PATH
@@ -108,9 +125,11 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         url = f"https://www.youtube.com/watch?v={video_id_or_url}"
         file_prefix = video_id_or_url
 
+    # Audioni yuklab olish parametrlari
     ydl_opts = _get_active_opts({
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'ios', 'web']
@@ -125,27 +144,42 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
     def _download():
         title = "Audio Track"
+        
+        # 1-urinish: MP3 ga o'tkazib yuklash
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
         except Exception as e:
-            logging.error(f"Download error: {e}")
+            logging.error(f"First download attempt error (MP3): {e}")
 
-        # 1. Aniq kutilgan MP3 faylini tekshirish
+            # 2-urinish: Agar MP3 konvertatsiya o'xshamasa, postprocessing'siz original audioni yuklash
+            try:
+                fallback_opts = _get_active_opts({
+                    'format': 'bestaudio/best',
+                    'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
+                })
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    if info and isinstance(info, dict):
+                        title = info.get('title', 'Audio Track')
+            except Exception as e2:
+                logging.error(f"Fallback download error: {e2}")
+
+        # 1. Kutilgan MP3 faylini tekshirish
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
             return expected_mp3, title
 
-        # 2. Prefiks bo'yicha saqlangan har qanday faylni qidirish
+        # 2. Prefiks bo'yicha saqlangan har qanday (m4a, webm, mp3 va h.k.) faylni qidirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = glob.glob(pattern)
         for f in files:
             if os.path.getsize(f) > 0:
                 return f, title
 
-        # 3. Oxirgi chora: Oxirgi tushgan faylni olish
+        # 3. Oxirgi chora: Downloads papkasidagi eng so'nggi yuklangan faylni olish
         all_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
         if all_files:
             latest_file = max(all_files, key=os.path.getmtime)
