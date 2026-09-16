@@ -5,7 +5,6 @@ import asyncio
 import logging
 import yt_dlp
 
-# FFmpeg avtomatik aniqlash
 try:
     import imageio_ffmpeg
     FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
@@ -44,19 +43,19 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 10) -> list[dict]:
-    """YouTube'dan qo'shiq qidirish"""
+    """YouTube va SoundCloud bo'yicha zaxirali qidiruv."""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'web'],
-                'player_skip': ['configs']
+                'player_client': ['android', 'web']
             }
         }
     })
 
     def _search():
+        # 1-urinish: YouTube bo'yicha
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -70,21 +69,44 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
                                 'duration': format_duration(entry.get('duration', 0)),
                                 'uploader': entry.get('uploader', 'Unknown Artist')
                             })
+                if results:
+                    return results
+        except Exception as e:
+            logging.error(f"YouTube search error: {e}")
+
+        # 2-urinish: SoundCloud bo'yicha (YouTube blok bo'lganda ishlaydi)
+        try:
+            sc_opts = _get_active_opts({'extract_flat': True})
+            with yt_dlp.YoutubeDL(sc_opts) as ydl:
+                res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+                results = []
+                if res and 'entries' in res and res['entries']:
+                    for entry in res['entries']:
+                        if entry:
+                            results.append({
+                                'id': entry.get('url') or entry.get('id'),
+                                'title': entry.get('title', 'Unknown Title'),
+                                'duration': format_duration(entry.get('duration', 0)),
+                                'uploader': entry.get('uploader', 'Unknown Artist')
+                            })
                 return results
         except Exception as e:
-            logging.error(f"Search error: {e}")
+            logging.error(f"SoundCloud search error: {e}")
             return []
 
     return await asyncio.to_thread(_search)
 
 
-async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
-    """MP3 formatida audio yuklab olish"""
-    url = f"https://www.youtube.com/watch?v={video_id}"
+async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
+    """YouTube ID yoki URL manzil orqali yuklab olish."""
+    if video_id_or_url.startswith("http"):
+        url = video_id_or_url
+    else:
+        url = f"https://www.youtube.com/watch?v={video_id_or_url}"
     
     ydl_opts = _get_active_opts({
         'format': 'bestaudio/best',
-        'outtmpl': f'{DOWNLOAD_DIR}/{video_id}.%(ext)s',
+        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web']
@@ -99,21 +121,22 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
 
     def _download():
         title = "Audio Track"
+        file_id = "audio"
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
+                    file_id = info.get('id', 'audio')
         except Exception as e:
             logging.error(f"Download error: {e}")
 
-        # 1. MP3 fayl mavjudligini tekshirish
-        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{video_id}.mp3")
+        # Tayyor mp3 faylini izlash
+        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp3")
         if os.path.exists(expected_mp3):
             return expected_mp3, title
 
-        # 2. Agar MP3 ga o'tmagan bo'lsa, mavjud har qanday formatdagi faylni izlash
-        pattern = os.path.join(DOWNLOAD_DIR, f"{video_id}.*")
+        pattern = os.path.join(DOWNLOAD_DIR, f"{file_id}.*")
         files = glob.glob(pattern)
         if files:
             return files[0], title
@@ -124,7 +147,7 @@ async def download_audio_by_id(video_id: str) -> tuple[str | None, str]:
 
 
 async def download_media(url: str) -> dict:
-    """YouTube yoki Instagram'dan video yuklab olish"""
+    """Instagram va YouTube video yuklagichi."""
     ydl_opts = _get_active_opts({
         'format': 'best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
