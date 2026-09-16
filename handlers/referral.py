@@ -36,3 +36,39 @@ async def show_contest(message: Message):
     )
 
     await message.answer(text, parse_mode="HTML")
+from aiogram import Router, F, Bot
+from aiogram.types import CallbackQuery
+from database import get_top3_leaderboard, get_contest_settings
+
+# Agar router yaratilmagan bo'lsa: router = Router()
+
+@router.callback_query(F.data == "get_my_ref_link")
+async def send_user_ref_link(call: CallbackQuery, bot: Bot):
+    bot_info = await bot.get_me()
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{call.from_user.id}"
+    
+    text = (
+        f"🔑 <b>Sizning shaxsiy taklif havolangiz:</b>\n\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"💡 Ushbu havolani do'stlaringizga tarqating va konkursda g'olib bo'ling!"
+    )
+    await call.message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+    await call.answer()
+
+@router.callback_query(F.data == "check_leaderboard")
+async def show_live_leaderboard(call: CallbackQuery):
+    top3 = await get_top3_leaderboard()
+    contest = await get_contest_settings()
+
+    medals = ["🥇", "🥈", "🥉"]
+    top_text = "🏆 <b>Hozirgi TOP-3 Yetakchilar:</b>\n\n"
+    if top3:
+        for idx, (name, count) in enumerate(top3):
+            top_text += f"{medals[idx]} <b>{name}</b> — {count} ta referal\n"
+    else:
+        top_text += "<i>Hali hech kim referal to'plamadi. Birinchi bo'ling!</i>\n"
+
+    top_text += f"\n🎯 Maqsad: <b>{contest['target']} ta</b> | 💰 Mukofot: <b>{contest['prize']:,} so'm</b>"
+
+    await call.answer(show_alert=True, text="📊 Reyting yangilandi!")
+    await call.message.answer(top_text, parse_mode="HTML")
