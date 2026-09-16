@@ -10,7 +10,7 @@ from shazamio import Shazam
 
 # services/downloader.py faylingizdagi funksiyalarni integratsiya qilamiz
 from services.downloader import search_tracks, download_media, download_audio_by_id
-from database import add_user, get_cached_file, save_to_cache  # Kesh funksiyalari qo'shildi
+from database import add_user, get_cached_file, save_to_cache  # Asinxron kesh funksiyalari
 
 router = Router()
 
@@ -298,9 +298,9 @@ async def handle_download_callback(call: CallbackQuery):
     send_title = item.get('title', 'Audio Track')
 
     # -------------------------------------------------------------
-    # 1. KESH TEKSHIRISH (Keshda bor bo'lsa darhol yuboradi)
+    # 1. KESH TEKSHIRISH (await qo'shildi)
     # -------------------------------------------------------------
-    cached_file_id = get_cached_file(track_id_or_url)
+    cached_file_id = await get_cached_file(track_id_or_url)
     if cached_file_id:
         await call.answer(f"⚡ Instant yuborilmoqda...")
         await call.message.answer_audio(
@@ -331,10 +331,10 @@ async def handle_download_callback(call: CallbackQuery):
             )
             
             # -------------------------------------------------------------
-            # 3. KESHGA SAQLASH (Keyingi foydalanuvchilar tez olishi uchun)
+            # 3. KESHGA SAQLASH (await qo'shildi)
             # -------------------------------------------------------------
             if sent_audio.audio and sent_audio.audio.file_id:
-                save_to_cache(track_id_or_url, sent_audio.audio.file_id)
+                await save_to_cache(track_id_or_url, sent_audio.audio.file_id)
 
             try:
                 os.remove(file_path)
