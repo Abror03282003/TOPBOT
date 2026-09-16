@@ -2,6 +2,7 @@ import os
 import uuid
 import subprocess
 import urllib.parse
+import logging
 import imageio_ffmpeg
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
@@ -16,7 +17,7 @@ SEARCH_CACHE = {}
 
 
 def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
-    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar (Lyrics tugmasi bilan)."""
+    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar."""
     safe_name = song_name[:25]
     encoded_name = urllib.parse.quote(safe_name)
     
@@ -99,7 +100,7 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str, str]:
+async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str | None, str | None]:
     """Har qanday media fayldan 20 sekundlik WAV kesib olish va Shazam orqali tanish."""
     os.makedirs("downloads", exist_ok=True)
     file_info = await message.bot.get_file(file_id)
@@ -138,12 +139,17 @@ async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str,
         return None, "Qo'shiq aniqlanmadi (Shazam topa olmadi)"
     finally:
         if os.path.exists(input_file):
-            os.remove(input_file)
+            try:
+                os.remove(input_file)
+            except Exception:
+                pass
         if os.path.exists(audio_file):
-            os.remove(audio_file)
+            try:
+                os.remove(audio_file)
+            except Exception:
+                pass
 
 
-# Foydalanuvchi havola (link) yuborganda
 @router.message(F.text.startswith("http"))
 async def handle_link(message: Message):
     add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
@@ -152,7 +158,7 @@ async def handle_link(message: Message):
         data = await download_media(message.text)
         file_path = data.get("file_path")
         
-        if file_path and os.path.exists(file_path):
+        if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             video_file = FSInputFile(file_path)
             caption_text = f"📩 @{BOT_USERNAME} orqali yuklab olindi"
             
@@ -164,12 +170,11 @@ async def handle_link(message: Message):
             os.remove(file_path)
             await msg.delete()
         else:
-            await msg.edit_text("❌ Fayl topilmadi.")
+            await msg.edit_text("❌ Fayl topilmadi yoki yuklab bo'lmadi.")
     except Exception as e:
         await msg.edit_text(f"❌ Yuklashda xatolik yuz berdi: {e}")
 
 
-# Oddiy matnli qidiruv yuborilganda
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_search(message: Message):
     add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
@@ -185,11 +190,11 @@ async def handle_search(message: Message):
         
         text, markup = render_page(results, search_id, page=0)
         await msg.edit_text(text, reply_markup=markup, parse_mode="HTML")
-    except Exception:
+    except Exception as e:
+        logging.error(f"Search error: {e}")
         await msg.edit_text("❌ Qidiruvda xatolik yuz berdi.")
 
 
-# Voice, Video Note yoki Audio yuborilganda
 @router.message(F.voice | F.video_note | F.audio)
 async def handle_all_media_types(message: Message):
     add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
@@ -224,7 +229,6 @@ async def handle_all_media_types(message: Message):
         await status_msg.edit_text(f"❌ Qo'shiq aniqlandi: <b>{song_name}</b>, lekin mp3 versiyasi topilmadi.", parse_mode="HTML")
 
 
-# Video ostidagi "Qo'shiqni yuklab olish" tugmasi bosilganda
 @router.callback_query(F.data == "identify_and_search_song")
 async def handle_identify_song(call: CallbackQuery):
     await call.answer("🔍 Qo'shiq aniqlanmoqda...")
@@ -252,7 +256,6 @@ async def handle_identify_song(call: CallbackQuery):
         await status_msg.edit_text("❌ Video topilmadi.")
 
 
-# Musiqa matni (Lyrics) tugmasi bosilganda
 @router.callback_query(F.data.startswith("lyr_"))
 async def handle_lyrics_callback(call: CallbackQuery):
     song_name = urllib.parse.unquote(call.data.replace("lyr_", ""))
@@ -304,12 +307,16 @@ async def handle_page_callback(call: CallbackQuery):
 @router.callback_query(F.data.startswith("dl_"))
 async def handle_download_callback(call: CallbackQuery):
     parts = call.data.split("_")
+    if len(parts) < 3:
+        await call.answer("❌ Noto'g'ri so'rov.", show_alert=True)
+        return
+
     search_id = parts[1]
     index = int(parts[2])
     
     results = SEARCH_CACHE.get(search_id)
     if not results or index >= len(results):
-        await call.answer("❌ Natija eskirgan. Iltimos qayta qidiring.", show_alert=True)
+        await call.answer("❌ Natija eskirgan. Iltimos, qayta qidiring.", show_alert=True)
         return
 
     item = results[index]
@@ -317,20 +324,29 @@ async def handle_download_callback(call: CallbackQuery):
     status_msg = await call.message.answer(f"⏳ <b>{item['title']}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
-        file_path, title = await download_audio_by_id(item['id'])
-        if file_path and os.path.exists(file_path):
+        track_id = item.get('id')
+        file_path, title = await download_audio_by_id(track_id)
+        
+        # Fayl mavjudligi va hajmini tekshirish
+        if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             audio_file = FSInputFile(file_path)
             
             await call.message.answer_audio(
                 audio=audio_file,
-                title=title,
-                reply_markup=build_song_keyboard(title)
+                title=title or item.get('title'),
+                reply_markup=build_song_keyboard(title or item.get('title'))
             )
-            os.remove(file_path)
+            
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                logging.error(f"Faylni o'chirishda xatolik: {e}")
+                
             await status_msg.delete()
         else:
-            await status_msg.edit_text("❌ Audio fayl topilmadi.")
+            await status_msg.edit_text("❌ Audio fayl topilmadi yoki yuklash imkonsiz bo'ldi.")
     except Exception as e:
+        logging.error(f"Download callback xatosi: {e}")
         await status_msg.edit_text(f"❌ Audio yuklashda xatolik: {e}")
 
 
