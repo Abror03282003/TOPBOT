@@ -43,8 +43,8 @@ def format_duration(seconds: int) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-async def search_tracks(query: str, limit: int = 10) -> list[dict]:
-    """YouTube, SoundCloud va boshqa manbalardan izlash."""
+async def search_tracks(query: str, limit: int = 30) -> list[dict]:
+    """YouTube va SoundCloud orqali 30 tagacha qo'shiqni qidiradi."""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
@@ -56,7 +56,7 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
     })
 
     def _search():
-        # 1-urinish: YouTube bo'yicha
+        # 1-urinish: YouTube bo'yicha (30 ta)
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -75,7 +75,7 @@ async def search_tracks(query: str, limit: int = 10) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
-        # 2-urinish: SoundCloud bo'yicha (YouTube bloklanganda)
+        # 2-urinish: SoundCloud bo'yicha (YouTube ishlamay qolganda)
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -133,19 +133,19 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         except Exception as e:
             logging.error(f"Download error: {e}")
 
-        # 1. Aniq MP3 faylini tekshirish
+        # 1. Aniq kutilgan MP3 faylini tekshirish
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
             return expected_mp3, title
 
-        # 2. downloads papkasidagi har qanday yuklangan faylni qidirish
+        # 2. Prefiks bo'yicha saqlangan har qanday faylni qidirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = glob.glob(pattern)
         for f in files:
             if os.path.getsize(f) > 0:
                 return f, title
 
-        # 3. Oxirgi chora: downloads papkasiga oxirgi tushgan MP3/audio faylni olish
+        # 3. Oxirgi chora: Oxirgi tushgan faylni olish
         all_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
         if all_files:
             latest_file = max(all_files, key=os.path.getmtime)
