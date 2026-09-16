@@ -13,7 +13,9 @@ async def init_db():
                 full_name TEXT,
                 username TEXT,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active DATE DEFAULT CURRENT_DATE
+                last_active DATE DEFAULT CURRENT_DATE,
+                referrer_id INTEGER DEFAULT NULL,
+                referrals_count INTEGER DEFAULT 0
             )
         """)
         
@@ -24,12 +26,39 @@ async def init_db():
                 file_id TEXT
             )
         """)
+
+        # Konkurs sozlamalari jadvali
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS contest_settings (
+                id INTEGER PRIMARY KEY DEFAULT 1,
+                is_active INTEGER DEFAULT 0,
+                target_referrals INTEGER DEFAULT 25,
+                prize_amount INTEGER DEFAULT 50000,
+                end_time TEXT DEFAULT NULL
+            )
+        """)
         
-        # Agar eski bazada last_active ustuni bo'lmasa, uni xavfsiz qo'shish
+        # Boshlang'ich konkurs sozlamasini kiritish (agar bo'lmasa)
+        await db.execute("""
+            INSERT OR IGNORE INTO contest_settings (id, is_active, target_referrals, prize_amount)
+            VALUES (1, 0, 25, 50000)
+        """)
+        
+        # Eski bazalarda ustunlar bo'lmasa, ularni xavfsiz qo'shish
         try:
             await db.execute("ALTER TABLE users ADD COLUMN last_active DATE DEFAULT CURRENT_DATE")
         except Exception:
-            pass  # Ustun allaqachon mavjud bo'lsa, xatolikni o'tkazib yuboradi
+            pass
+
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL")
+        except Exception:
+            pass
+
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN referrals_count INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
         await db.commit()
 
@@ -63,7 +92,7 @@ async def get_today_active_users() -> int:
             return row[0] if row else 0
 
 async def get_all_user_ids() -> list[int]:
-    """Reklama yuborish uchun barcha user_id larni olish (admin.py uchun)."""
+    """Reklama va e'lonlar yuborish uchun barcha user_id larni olish."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             rows = await cursor.fetchall()
@@ -86,3 +115,69 @@ async def save_to_cache(youtube_id: str, file_id: str):
             (youtube_id, file_id)
         )
         await db.commit()
+
+# --- REFERAL VA KONKURS FUNKSIYALARI ---
+
+async def get_contest_settings():
+    """Konkurs sozlamalarini olish."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT is_active, target_referrals, prize_amount, end_time FROM contest_settings WHERE id = 1") as cursor:
+            res = await cursor.fetchone()
+            if res:
+                return {
+                    "is_active": res[0],
+                    "target": res[1],
+                    "prize": res[2],
+                    "end_time": res[3]
+                }
+            return {"is_active": 0, "target": 25, "prize": 50000, "end_time": None}
+
+async def update_contest_settings(target: int, prize: int, end_time: str = None, is_active: int = 1):
+    """Admin tomonidan konkurs parametrlarini va vaqtni yangilash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            UPDATE contest_settings 
+            SET target_referrals = ?, prize_amount = ?, end_time = ?, is_active = ?
+            WHERE id = 1
+        """, (target, prize, end_time, is_active))
+        await db.commit()
+
+async def stop_contest_db():
+    """Konkursni to'xtatish."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE contest_settings SET is_active = 0 WHERE id = 1")
+        await db.commit()
+
+async def process_referral(new_user_id: int, referrer_id: int) -> bool:
+    """Yangi foydalanuvchini taklif qilgan odamga referal sifatida biriktirish."""
+    if new_user_id == referrer_id:
+        return False
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Foydalanuvchi ilgaridan bormi va kimdir uni taklif qilganmi tekshirish
+        async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (new_user_id,)) as cursor:
+            user = await cursor.fetchone()
+            if user and user[0] is not None:
+                return False  # Allaqachon boshqa referali bor
+
+        # Taklif qilgan odamning referal hisobini 1 ga oshirish
+        await db.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
+        # Yangi foydalanuvchiga taklif qiluvchi ID-sini yozib qo'yish
+        await db.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (referrer_id, new_user_id))
+        await db.commit()
+        return True
+
+async def get_leaderboard(limit: int = 10):
+    """TOP-10 ko'p referal yig'ganlar reytingini olish."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT full_name, referrals_count FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT ?", 
+            (limit,)
+        ) as cursor:
+            return await cursor.fetchall()
+
+async def get_winner():
+    """Eng ko'p referal yig'gan g'olibni aniqlash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, full_name, referrals_count FROM users ORDER BY referrals_count DESC LIMIT 1") as cursor:
+            return await cursor.fetchone()
