@@ -58,7 +58,7 @@ def build_video_keyboard() -> InlineKeyboardMarkup:
 
 
 def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
-    """Sahifa bo'yicha matn va tugmalarni shakllantirish."""
+    """Sahifa bo'yicha matn va har doim 1-10 tartibli tugmalarni shakllantirish."""
     per_page = 10
     total_items = len(results)
     total_pages = (total_items + per_page - 1) // per_page
@@ -75,18 +75,21 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
         
     keyboard = []
     
+    # 1-qator (1, 2, 3, 4, 5)
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
         row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
     if row1:
         keyboard.append(row1)
         
+    # 2-qator (6, 7, 8, 9, 10)
     if end_idx > start_idx + 5:
         row2 = []
         for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
             row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
         keyboard.append(row2)
         
+    # Navigatsiya (⬅️ ❌ ➡️)
     prev_page = page - 1 if page > 0 else total_pages - 1
     next_page = page + 1 if page < total_pages - 1 else 0
     
@@ -327,7 +330,6 @@ async def handle_download_callback(call: CallbackQuery):
         track_id = item.get('id')
         file_path, title = await download_audio_by_id(track_id)
         
-        # Fayl mavjudligi va hajmini tekshirish
         if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             audio_file = FSInputFile(file_path)
             
