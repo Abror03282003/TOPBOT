@@ -12,7 +12,9 @@ from database import (
     get_contest_settings,
     update_contest_settings,
     stop_contest_db,
-    get_winner
+    get_winner,
+    get_top3_leaderboard,           # Yangi qo'shilgan
+    update_contest_announcement     # Yangi qo'shilgan
 )
 
 router = Router()
@@ -27,6 +29,32 @@ class ContestState(StatesGroup):
     waiting_for_target = State()
     waiting_for_prize = State()
     waiting_for_duration = State()
+    waiting_for_post_content = State()  # Post va rasm so'rash uchun yangi holat
+
+# --- TUGMALAR YARATISH FUNKSIYALARI ---
+
+def admin_contest_keyboard():
+    keyboard = [
+        [InlineKeyboardButton(text="➕ Yangi konkurs boshlash", callback_data="admin_start_contest")],
+        [InlineKeyboardButton(text="🛑 Konkursni to'xtatish", callback_data="admin_stop_contest")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_contest_post_keyboard(bot_username: str, user_id: int):
+    """Foydalanuvchilarga boradigan post ostidagi shaxsiy tugmalar."""
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    share_url = f"https://t.me/share/url?url={ref_link}&text=🚀%20Botda%20daxshat%20konkurs%20boshlandi!%20Qatnashib%20pul%20yutib%20oling!"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📲 Postni ulashish", url=share_url),
+            InlineKeyboardButton(text="🔗 Linkimni olish", callback_data="get_my_ref_link")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Reyting va Natijalar", callback_data="check_leaderboard")
+        ]
+    ])
+    return keyboard
 
 # --- ESKI FUNKSIYALAR (TEGILMADI) ---
 
@@ -76,13 +104,6 @@ async def process_broadcast(message: Message, state: FSMContext):
 
 # --- YANGI KONKURS FUNKSIYALARI ---
 
-def admin_contest_keyboard():
-    keyboard = [
-        [InlineKeyboardButton(text="➕ Yangi konkurs boshlash", callback_data="admin_start_contest")],
-        [InlineKeyboardButton(text="🛑 Konkursni to'xtatish", callback_data="admin_stop_contest")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=keyboard)
-
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin_panel(message: Message):
     """Admin panel orqali konkurs holatini ko'rish."""
@@ -128,28 +149,82 @@ async def process_prize(message: Message, state: FSMContext):
     await state.set_state(ContestState.waiting_for_duration)
 
 @router.message(ContestState.waiting_for_duration, F.from_user.id == ADMIN_ID)
-async def process_duration(message: Message, state: FSMContext, bot: Bot):
+async def process_duration(message: Message, state: FSMContext):
     try:
         hours = float(message.text.replace(',', '.'))
     except ValueError:
         await message.answer("❌ Iltimos, soatni raqamda kiriting (masalan: 2 yoki 4.5):")
         return
 
+    await state.update_data(hours=hours)
+    await state.set_state(ContestState.waiting_for_post_content)
+    await message.answer(
+        "📝 <b>Endi foydalanuvchilarga boradigan konkurs posti (matn va rasm)ni yuboring:</b>\n\n"
+        "<i>(Ajoyib matn va rasm yuborsangiz bo'ladi. Matnsiz rasm yoki shunchaki matn yuborish ham mumkin)</i>",
+        parse_mode="HTML"
+    )
+
+@router.message(ContestState.waiting_for_post_content, F.from_user.id == ADMIN_ID)
+async def process_post_content(message: Message, state: FSMContext, bot: Bot):
+    """Admin yuborgan postni qabul qilish, bazaga saqlash va barcha foydalanuvchilarga tarqatish."""
     data = await state.get_data()
     target = data['target']
     prize = data['prize']
-    
+    hours = data['hours']
+
     end_dt = datetime.now() + timedelta(hours=hours)
     end_time_str = end_dt.strftime("%Y-%m-%d %H:%M")
 
-    await update_contest_settings(target=target, prize=prize, end_time=end_time_str, is_active=1)
+    # Post matni va rasm faylini olish
+    post_text = message.caption or message.text or "🔥 DAXSHAT KONKURS BOSHLANDI!"
+    photo_id = message.photo[-1].file_id if message.photo else None
+
+    # Bazani yangilash
+    await update_contest_announcement(target, prize, end_time_str, post_text, photo_id)
     await state.clear()
 
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+
+    # TOP 3 reytingni shakllantirish
+    top3 = await get_top3_leaderboard()
+    top3_text = "\n"
+    medals = ["🥇", "🥈", "🥉"]
+    if top3:
+        for idx, (name, count) in enumerate(top3):
+            top3_text += f"{medals[idx]} <b>{name}</b> — {count} ta referal\n"
+    else:
+        top3_text += "<i>Hali hech kim referal to'plamadi. Birinchi bo'ling!</i>\n"
+
+    await message.answer("🚀 <b>Konkurs boshlandi va barcha foydalanuvchilarga shaxsiy linklari bilan yuborilmoqda...</b>", parse_mode="HTML")
+
+    users = await get_all_user_ids()
+    success = 0
+
+    for u_id in users:
+        final_caption = (
+            f"{post_text}\n\n"
+            f"🎯 <b>Maqsad:</b> {target} ta do'stni taklif qilish\n"
+            f"💰 <b>Mukofot:</b> {prize:,} so'm\n"
+            f"⏳ <b>Tugash vaqti:</b> {end_time_str}\n\n"
+            f"🏆 <b>Hozirgi TOP-3 Yetakchilar:</b>\n"
+            f"{top3_text}"
+        )
+        reply_kb = get_contest_post_keyboard(bot_username, u_id)
+        try:
+            if photo_id:
+                await bot.send_photo(chat_id=u_id, photo=photo_id, caption=final_caption, reply_markup=reply_kb, parse_mode="HTML")
+            else:
+                await bot.send_message(chat_id=u_id, text=final_caption, reply_markup=reply_kb, parse_mode="HTML")
+            
+            success += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            pass
+
     await message.answer(
-        f"✅ <b>Konkurs muvaffaqiyatli yoqildi!</b>\n\n"
-        f"🎯 Odam limiti: <b>{target} ta</b>\n"
-        f"💰 Mukofot: <b>{prize:,} so'm</b>\n"
-        f"⏳ Tugash vaqti: <b>{end_time_str}</b> ({hours} soatdan so'ng)",
+        f"✅ <b>Konkurs muvaffaqiyatli yoqildi va e'lon yuborildi!</b>\n\n"
+        f"📢 Yuborildi: <b>{success} ta</b> foydalanuvchiga",
         parse_mode="HTML"
     )
 
@@ -203,7 +278,46 @@ async def auto_finish_contest(wait_seconds: int, bot: Bot):
                 pass
 
 @router.callback_query(F.data == "admin_stop_contest", F.from_user.id == ADMIN_ID)
-async def stop_contest_callback(call: CallbackQuery):
+async def stop_contest_callback(call: CallbackQuery, bot: Bot):
+    """Konkursni admin tomonidan muddatidan oldin to'xtatish va barchaga xabar yuborish."""
+    contest = await get_contest_settings()
+
+    if not contest["is_active"]:
+        await call.answer("⚠️ Hozirda hech qanday faol konkurs yo'q!", show_alert=True)
+        return
+
     await stop_contest_db()
-    await call.message.edit_text("🔴 Konkurs muddatdan oldin to'xtatildi.")
+    winner = await get_winner()
+
+    if winner and winner[2] > 0:
+        winner_id, full_name, count = winner
+        announce_text = (
+            f"🛑 <b>KONKURS MUDDATIDAN OLDIN YAKUNLANDI!</b>\n\n"
+            f"Admin tomonidan konkurs muddatidan oldin to'xtatildi.\n\n"
+            f"🏆 <b>Hozirgi g'olib:</b> <a href='tg://user?id={winner_id}'>{full_name}</a>\n"
+            f"📊 <b>To'plagan referallari:</b> {count} ta\n"
+            f"🎁 <b>Yutug'i:</b> {contest['prize']:,} so'm!\n\n"
+            f"👏 G'olibni tabriklaymiz!"
+        )
+    else:
+        announce_text = (
+            f"🛑 <b>KONKURS MUDDATIDAN OLDIN YAKUNLANDI!</b>\n\n"
+            f"Admin tomonidan konkurs to'xtatildi.\n"
+            f"Afsuski, hech kim yetarli referal yig'a olmadi."
+        )
+
+    await call.message.edit_text("🔴 <b>Konkurs muddatidan oldin to'xtatildi. Barcha foydalanuvchilarga xabar yuborilmoqda...</b>", parse_mode="HTML")
     await call.answer("Konkurs to'xtatildi")
+
+    all_users = await get_all_user_ids()
+    success = 0
+
+    for user_id in all_users:
+        try:
+            await bot.send_message(chat_id=user_id, text=announce_text, parse_mode="HTML")
+            success += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            pass
+
+    await call.message.answer(f"✅ Konkurs to'xtatilgani haqidagi e'lon <b>{success} ta</b> foydalanuvchiga yetkazildi!", parse_mode="HTML")
