@@ -10,7 +10,7 @@ from shazamio import Shazam
 
 # services/downloader.py faylingizdagi funksiyalarni integratsiya qilamiz
 from services.downloader import search_tracks, download_media, download_audio_by_id
-from database import add_user
+from database import add_user, get_cached_file, save_to_cache  # Kesh funksiyalari qo'shildi
 
 router = Router()
 
@@ -295,23 +295,47 @@ async def handle_download_callback(call: CallbackQuery):
         await call.answer("❌ Qo'shiq ID-si topilmadi.", show_alert=True)
         return
 
-    await call.answer(f"⏳ '{item['title'][:20]}' yuklanmoqda...")
-    status_msg = await call.message.answer(f"⏳ <b>{item['title']}</b> yuklanmoqda...", parse_mode="HTML")
+    send_title = item.get('title', 'Audio Track')
+
+    # -------------------------------------------------------------
+    # 1. KESH TEKSHIRISH (Keshda bor bo'lsa darhol yuboradi)
+    # -------------------------------------------------------------
+    cached_file_id = get_cached_file(track_id_or_url)
+    if cached_file_id:
+        await call.answer(f"⚡ Instant yuborilmoqda...")
+        await call.message.answer_audio(
+            audio=cached_file_id,
+            title=send_title,
+            reply_markup=build_song_keyboard(send_title)
+        )
+        return
+
+    # -------------------------------------------------------------
+    # 2. KESHDA BO'LMASA -> YouTube'dan yuklab oladi
+    # -------------------------------------------------------------
+    await call.answer(f"⏳ '{send_title[:20]}' yuklanmoqda...")
+    status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
-        # download_audio_by_id funksiyasidan file_path va title olinadi
         file_path, title = await download_audio_by_id(track_id_or_url)
+        if title and title != "Audio Track":
+            send_title = title
         
         if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             audio_file = FSInputFile(file_path)
-            send_title = title if title and title != "Audio Track" else item.get('title')
             
-            await call.message.answer_audio(
+            sent_audio = await call.message.answer_audio(
                 audio=audio_file,
                 title=send_title,
                 reply_markup=build_song_keyboard(send_title)
             )
             
+            # -------------------------------------------------------------
+            # 3. KESHGA SAQLASH (Keyingi foydalanuvchilar tez olishi uchun)
+            # -------------------------------------------------------------
+            if sent_audio.audio and sent_audio.audio.file_id:
+                save_to_cache(track_id_or_url, sent_audio.audio.file_id)
+
             try:
                 os.remove(file_path)
             except Exception as e:
