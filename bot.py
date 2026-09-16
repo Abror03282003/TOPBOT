@@ -17,7 +17,7 @@ else:
 
 # 2. Qolgan kutubxona va modullarni import qilish
 from aiogram import Bot, Dispatcher
-from database import init_db
+from database import init_db, init_cache_db
 from handlers import download, admin
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -30,8 +30,9 @@ if YOUTUBE_COOKIES:
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # Ma'lumotlar bazasini asinxron ishga tushirish
+    # Ma'lumotlar bazalarini ishga tushirish
     await init_db()
+    init_cache_db()  # Kesh bazasi qo'shildi
     
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
