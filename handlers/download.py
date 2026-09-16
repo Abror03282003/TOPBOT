@@ -198,8 +198,9 @@ async def handle_search(message: Message):
         await msg.edit_text("❌ Qidiruvda xatolik yuz berdi.")
 
 
-@router.message(F.voice | F.video_note | F.audio)
+@router.message(F.voice | F.video_note | F.audio | F.video)
 async def handle_all_media_types(message: Message):
+    """Barcha turdagi media yuborilganda qo'shiqni avtomatik aniqlash."""
     add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     status_msg = await message.answer("🎧 Tashlangan media eshitib ko'rilmoqda...")
     
@@ -210,6 +211,8 @@ async def handle_all_media_types(message: Message):
         file_id = message.video_note.file_id
     elif message.audio:
         file_id = message.audio.file_id
+    elif message.video:
+        file_id = message.video.file_id
 
     if not file_id:
         await status_msg.edit_text("❌ Media topshirishda xatolik.")
