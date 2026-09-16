@@ -8,7 +8,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from shazamio import Shazam
 
-# Siz taqdim etgan services/downloader.py faylidagi barcha funksiyalarni chaqirib olamiz
+# services/downloader.py faylingizdagi funksiyalarni integratsiya qilamiz
 from services.downloader import search_tracks, download_media, download_audio_by_id
 from database import add_user
 
@@ -60,7 +60,7 @@ def build_video_keyboard() -> InlineKeyboardMarkup:
 
 
 def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
-    """Sahifa bo'yicha matn va har doim 1-10 tartibli tugmalarni shakllantirish."""
+    """10 tadan sahifalab beruvchi va 1-10 tugmalari bor menyu."""
     per_page = 10
     total_items = len(results)
     total_pages = (total_items + per_page - 1) // per_page
@@ -75,7 +75,7 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     for i, item in enumerate(current_items, start=start_idx + 1):
         uploader = item.get('uploader', '')
         uploader_str = f" - <i>{uploader}</i>" if uploader and uploader != 'Unknown Artist' else ""
-        text += f"<b>{i}.</b> {item['title']}{uploader_str} <b>{item['duration']}</b>\n"
+        text += f"<b>{i}.</b> {item['title']}{uploader_str} <b>[{item['duration']}]</b>\n"
         
     keyboard = []
     
@@ -108,7 +108,7 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
 
 
 async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str | None, str | None]:
-    """Har qanday media fayldan 20 sekundlik WAV kesib olish va Shazam orqali tanish."""
+    """Media fayldan 20 sekundlik WAV kesib olib Shazam orqali aniqlaydi."""
     os.makedirs("downloads", exist_ok=True)
     file_info = await message.bot.get_file(file_id)
     
@@ -163,7 +163,7 @@ async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str 
 
 @router.message(F.text.startswith("http"))
 async def handle_link(message: Message):
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
+    await add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     msg = await message.answer("⏳ Video yuklanmoqda...")
     try:
         data = await download_media(message.text)
@@ -191,7 +191,7 @@ async def handle_link(message: Message):
 
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_search(message: Message):
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
+    await add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     msg = await message.answer("🔍 Qidirilmoqda...")
     try:
         results = await search_tracks(message.text, limit=30)
@@ -211,8 +211,8 @@ async def handle_search(message: Message):
 
 @router.message(F.voice | F.video_note | F.audio | F.video)
 async def handle_all_media_types(message: Message):
-    """Barcha turdagi media (voice, video note, audio, video) yuborilganda qo'shiqni avtomatik aniqlash."""
-    add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
+    """Voice, video note, audio va video uchun avtomatik Shazam tanish va qidiruv."""
+    await add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     status_msg = await message.answer("🎧 Tashlangan media eshitib ko'rilmoqda...")
     
     file_id = None
@@ -299,7 +299,7 @@ async def handle_download_callback(call: CallbackQuery):
     status_msg = await call.message.answer(f"⏳ <b>{item['title']}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
-        # downloader.py dagi download_audio_by_id funksiyasini chaqiramiz
+        # download_audio_by_id funksiyasidan file_path va title olinadi
         file_path, title = await download_audio_by_id(track_id_or_url)
         
         if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
