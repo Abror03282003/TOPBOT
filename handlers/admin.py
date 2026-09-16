@@ -4,11 +4,11 @@ from aiogram.types import Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from database import get_total_users, get_all_user_ids
+from database import get_total_users, get_today_active_users, get_all_user_ids
 
 router = Router()
 
-# ⚠️ O'zingizning Telegram ID-ingizni yozing
+# ⚠️ Telegram ID-ingiz
 ADMIN_ID = 1350101870  
 
 class BroadcastState(StatesGroup):
@@ -16,9 +16,16 @@ class BroadcastState(StatesGroup):
 
 @router.message(Command("stat"), F.from_user.id == ADMIN_ID)
 async def cmd_stat(message: Message):
-    """Foydalanuvchilar statistikasini ko'rsatish."""
-    total = get_total_users()
-    await message.answer(f"📊 <b>Bot statistikasi:</b>\n\nJami foydalanuvchilar: <b>{total}</b> ta", parse_mode="HTML")
+    """Foydalanuvchilar va bugungi faollik statistikasi."""
+    total = await get_total_users()
+    today_active = await get_today_active_users()
+    
+    text = (
+        "📊 <b>Bot statistikasi:</b>\n\n"
+        f"👥 Jami foydalanuvchilar: <b>{total}</b> ta\n"
+        f"⚡ Bugun faol foydalanuvchilar: <b>{today_active}</b> ta"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 @router.message(Command("send"), F.from_user.id == ADMIN_ID)
 async def cmd_send(message: Message, state: FSMContext):
@@ -30,7 +37,7 @@ async def cmd_send(message: Message, state: FSMContext):
 async def process_broadcast(message: Message, state: FSMContext):
     """Xabarni barchaga tarqatish."""
     await state.clear()
-    users = get_all_user_ids()
+    users = await get_all_user_ids()
     await message.answer(f"⏳ Xabar {len(users)} ta foydalanuvchiga yuborilmoqda...")
 
     success = 0
@@ -44,4 +51,9 @@ async def process_broadcast(message: Message, state: FSMContext):
         except Exception:
             failed += 1
 
-    await message.answer(f"✅ <b>Xabar yuborildi!</b>\n\nMuvaffaqiyatli: <b>{success}</b>\nMuvaffaqiyatsiz: <b>{failed}</b>", parse_mode="HTML")
+    await message.answer(
+        f"✅ <b>Xabar yuborildi!</b>\n\n"
+        f"Muvaffaqiyatli: <b>{success}</b>\n"
+        f"Muvaffaqiyatsiz (bloklaganlar): <b>{failed}</b>", 
+        parse_mode="HTML"
+    )
