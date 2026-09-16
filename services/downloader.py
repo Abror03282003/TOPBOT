@@ -6,16 +6,17 @@ import logging
 import urllib.parse
 import yt_dlp
 
-# FFmpeg va FFprobe manzillarini aniqlash
-try:
-    import imageio_ffmpeg
-    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-    FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
-    if not os.path.exists(FFPROBE_PATH):
-        FFPROBE_PATH = FFMPEG_PATH
-except Exception:
-    FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
-    FFPROBE_PATH = shutil.which("ffprobe") or FFMPEG_PATH
+# FFmpeg va FFprobe tizim yo'llarini to'g'ri aniqlash
+FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
+
+if not os.path.exists(FFMPEG_PATH):
+    try:
+        import imageio_ffmpeg
+        FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+        FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
+    except Exception:
+        pass
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -67,7 +68,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'tvhtml5', 'web']
+                'player_client': ['android', 'ios', 'web', 'tvhtml5']
             }
         }
     })
@@ -117,7 +118,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
-    """YouTube ID yoki SoundCloud URL orqali audio yuklab olish (ko'p bosqichli zaxira bilan)."""
+    """YouTube ID yoki SoundCloud URL orqali audio yuklab olish."""
     if str(video_id_or_url).startswith("http"):
         url = video_id_or_url
         file_prefix = "sc_" + str(hash(video_id_or_url))[-6:]
@@ -128,14 +129,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
     def _download():
         title = "Audio Track"
 
-        # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash
+        # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash (Moxim format moslashuvchanligi bilan)
         ydl_opts_mp3 = _get_active_opts({
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/ba/best/b',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'tvhtml5']
+                    'player_client': ['android', 'ios', 'web']
                 }
             },
             'postprocessors': [{
@@ -160,13 +161,13 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
             if os.path.getsize(f) > 0:
                 return f, title
 
-        # 2-Bosqich: Original ko'rinishida yuklash (Konvertatsiyasiz: m4a/webm)
+        # 2-Bosqich: Original ko'rinishida yuklash (Konvertatsiyasiz: har qanday audio format)
         ydl_opts_raw = _get_active_opts({
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'format': 'ba*/b*/bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tvhtml5', 'android']
+                    'player_client': ['tvhtml5', 'android', 'web']
                 }
             }
         })
@@ -200,7 +201,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 async def download_media(url: str) -> dict:
     """Video yuklab olish (YouTube/Instagram)"""
     ydl_opts = _get_active_opts({
-        'format': 'best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'max_filesize': 50 * 1024 * 1024,
     })
