@@ -181,3 +181,26 @@ async def get_winner():
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id, full_name, referrals_count FROM users ORDER BY referrals_count DESC LIMIT 1") as cursor:
             return await cursor.fetchone()
+async def update_contest_announcement(target: int, prize: int, end_time: str, post_text: str, photo_id: str = None):
+    """Admin yaratgan konkurs posti ma'lumotlarini saqlash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        try:
+            await db.execute("ALTER TABLE contest_settings ADD COLUMN post_text TEXT")
+            await db.execute("ALTER TABLE contest_settings ADD COLUMN photo_id TEXT")
+        except Exception:
+            pass
+
+        await db.execute("""
+            UPDATE contest_settings 
+            SET target_referrals = ?, prize_amount = ?, end_time = ?, post_text = ?, photo_id = ?, is_active = 1
+            WHERE id = 1
+        """, (target, prize, end_time, post_text, photo_id))
+        await db.commit()
+
+async def get_top3_leaderboard():
+    """Top 3 talik yetakchilarni olish"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT full_name, referrals_count FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT 3"
+        ) as cursor:
+            return await cursor.fetchall()
