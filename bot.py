@@ -37,7 +37,7 @@ from handlers import start, download, admin, referral
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# COOKIES QISMI AYNAN SIZDAGIDEK O'ZGARISHSISZ QOLDIRILDI:
+# COOKIES QISMI:
 YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES")
 if YOUTUBE_COOKIES:
     with open("cookies.txt", "w") as f:
@@ -61,5 +61,7 @@ async def main():
     logging.info("Bot muvaffaqiyatli ishga tushdi!")
     await dp.start_polling(bot)
 
+if __name__ == "__main__":
+    asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
