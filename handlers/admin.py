@@ -13,8 +13,8 @@ from database import (
     update_contest_settings,
     stop_contest_db,
     get_winner,
-    get_top3_leaderboard,           # Yangi qo'shilgan
-    update_contest_announcement     # Yangi qo'shilgan
+    get_top3_leaderboard,
+    update_contest_announcement
 )
 
 router = Router()
@@ -29,7 +29,7 @@ class ContestState(StatesGroup):
     waiting_for_target = State()
     waiting_for_prize = State()
     waiting_for_duration = State()
-    waiting_for_post_content = State()  # Post va rasm so'rash uchun yangi holat
+    waiting_for_post_content = State()
 
 # --- TUGMALAR YARATISH FUNKSIYALARI ---
 
@@ -56,7 +56,7 @@ def get_contest_post_keyboard(bot_username: str, user_id: int):
     ])
     return keyboard
 
-# --- ESKI FUNKSIYALAR (TEGILMADI) ---
+# --- STATISTIKA VA REKLAMA ---
 
 @router.message(Command("stat"), F.from_user.id == ADMIN_ID)
 async def cmd_stat(message: Message):
@@ -91,7 +91,7 @@ async def process_broadcast(message: Message, state: FSMContext):
         try:
             await message.copy_to(chat_id=user_id)
             success += 1
-            await asyncio.sleep(0.05)  # Telegram limitidan oshmaslik uchun
+            await asyncio.sleep(0.05)
         except Exception:
             failed += 1
 
@@ -102,7 +102,7 @@ async def process_broadcast(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- YANGI KONKURS FUNKSIYALARI ---
+# --- KONKURS BOSHGARUVI ---
 
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin_panel(message: Message):
@@ -175,18 +175,15 @@ async def process_post_content(message: Message, state: FSMContext, bot: Bot):
     end_dt = datetime.now() + timedelta(hours=hours)
     end_time_str = end_dt.strftime("%Y-%m-%d %H:%M")
 
-    # Post matni va rasm faylini olish
     post_text = message.caption or message.text or "🔥 DAXSHAT KONKURS BOSHLANDI!"
     photo_id = message.photo[-1].file_id if message.photo else None
 
-    # Bazani yangilash
     await update_contest_announcement(target, prize, end_time_str, post_text, photo_id)
     await state.clear()
 
     bot_info = await bot.get_me()
     bot_username = bot_info.username
 
-    # TOP 3 reytingni shakllantirish
     top3 = await get_top3_leaderboard()
     top3_text = "\n"
     medals = ["🥇", "🥈", "🥉"]
@@ -258,7 +255,6 @@ async def auto_finish_contest(wait_seconds: int, bot: Bot):
                 f"🔥 Tez orada yangi konkurs e'lon qilinadi!"
             )
 
-        # 1. Adminga bildirishnoma yuborish
         try:
             await bot.send_message(
                 chat_id=ADMIN_ID, 
@@ -268,7 +264,6 @@ async def auto_finish_contest(wait_seconds: int, bot: Bot):
         except Exception:
             pass
 
-        # 2. Butun bot foydalanuvchilariga e'lon yuborish
         all_users = await get_all_user_ids()
         for user_id in all_users:
             try:
@@ -279,7 +274,7 @@ async def auto_finish_contest(wait_seconds: int, bot: Bot):
 
 @router.callback_query(F.data == "admin_stop_contest", F.from_user.id == ADMIN_ID)
 async def stop_contest_callback(call: CallbackQuery, bot: Bot):
-    """Konkursni admin tomonidan muddatidan oldin to'xtatish va barchaga xabar yuborish."""
+    """Konkursni admin tomonidan muddatidan oldin to'xtatish."""
     contest = await get_contest_settings()
 
     if not contest["is_active"]:
