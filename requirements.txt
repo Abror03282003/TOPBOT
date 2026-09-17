@@ -1,5 +1,6 @@
 aiogram>=3.0.0
-yt-dlp
-shazamio
-imageio-ffmpeg
 aiosqlite
+shazamio
+yt-dlp>=2024.03.10
+imageio-ffmpeg
+pydub
