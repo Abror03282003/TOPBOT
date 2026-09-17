@@ -9,7 +9,7 @@ from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMar
 from shazamio import Shazam
 
 from services.downloader import search_tracks, download_media, download_audio_by_id
-from database import add_user, get_cached_file, save_to_cache  # Asinxron kesh funksiyalari
+from database import add_user, get_cached_file, save_to_cache
 
 router = Router()
 
@@ -18,13 +18,8 @@ SEARCH_CACHE = {}
 
 
 def build_song_keyboard(search_id: str = None, index: int = None) -> InlineKeyboardMarkup:
-    """
-    Qo'shiq yuklangandan keyin chiqariladigan tugmalar.
-    64 baytlik limit buzilmasligi uchun 'search_id' va 'index' ishlatiladi.
-    """
     keyboard = []
     
-    # Agar search_id va index mavjud bo'lsa, Lyrics tugmasini xavfsiz ID formatida qo'shamiz
     if search_id is not None and index is not None:
         keyboard.append([
             InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"l:{search_id}:{index}")
@@ -45,7 +40,6 @@ def build_song_keyboard(search_id: str = None, index: int = None) -> InlineKeybo
 
 
 def build_video_keyboard() -> InlineKeyboardMarkup:
-    """Video ostidagi tugmalar paneli."""
     keyboard = [
         [
             InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
@@ -64,7 +58,6 @@ def build_video_keyboard() -> InlineKeyboardMarkup:
 
 
 def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str, InlineKeyboardMarkup]:
-    """10 tadan sahifalab beruvchi va 1-10 tugmalari bor menyu."""
     per_page = 10
     total_items = len(results)
     total_pages = (total_items + per_page - 1) // per_page
@@ -83,21 +76,21 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
         
     keyboard = []
     
-    # 1-qator (1, 2, 3, 4, 5)
+    # 1-qator (1-5)
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
         row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"d:{search_id}:{real_idx}"))
     if row1:
         keyboard.append(row1)
         
-    # 2-qator (6, 7, 8, 9, 10)
+    # 2-qator (6-10)
     if end_idx > start_idx + 5:
         row2 = []
         for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
             row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"d:{search_id}:{real_idx}"))
         keyboard.append(row2)
         
-    # Navigatsiya (⬅️ ❌ ➡️)
+    # Navigatsiya
     prev_page = page - 1 if page > 0 else total_pages - 1
     next_page = page + 1 if page < total_pages - 1 else 0
     
@@ -112,7 +105,6 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
 
 
 async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str | None, str | None]:
-    """Media fayldan 20 sekundlik WAV kesib olib Shazam orqali aniqlaydi."""
     os.makedirs("downloads", exist_ok=True)
     file_info = await message.bot.get_file(file_id)
     
@@ -151,7 +143,7 @@ async def process_media_for_shazam(message: Message, file_id: str) -> tuple[str 
             title = track.get('title', '')
             subtitle = track.get('subtitle', '')
             return f"{subtitle} {title}".strip(), None
-        return None, "Qo'shiq aniqlanmadi (Shazam topa olmadi)"
+        return None, "Qo'shiq aniqlanmadi"
     finally:
         if os.path.exists(input_file):
             try:
@@ -304,7 +296,7 @@ async def handle_download_callback(call: CallbackQuery):
 
     send_title = item.get('title', 'Audio Track')
 
-    # 1. KESH TEKSHIRISH
+    # 1. Kesh tekshiruvi
     cached_file_id = await get_cached_file(track_id_or_url)
     if cached_file_id:
         await call.answer("⚡ Instant yuborilmoqda...")
@@ -315,7 +307,7 @@ async def handle_download_callback(call: CallbackQuery):
         )
         return
 
-    # 2. KESHDA BO'LMASA -> YouTube'dan yuklab oladi
+    # 2. Yuklash
     await call.answer("⏳ Yuklanmoqda...")
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
@@ -333,7 +325,7 @@ async def handle_download_callback(call: CallbackQuery):
                 reply_markup=build_song_keyboard(search_id, index)
             )
             
-            # 3. KESHGA SAQLASH
+            # 3. Keshga saqlash
             if sent_audio.audio and sent_audio.audio.file_id:
                 await save_to_cache(track_id_or_url, sent_audio.audio.file_id)
 
@@ -373,7 +365,7 @@ async def handle_lyrics_callback(call: CallbackQuery):
     
     text = (
         f"📜 <b>{song_name}</b> - Musiqa matni\n\n"
-        f"<i>To'liq matn va tarjimasini litsenziyalangan manbalardan o'qish uchun quyidagi havola orqali o'ting:</i>\n\n"
+        f"<i>To'liq matnini o'qish uchun quyidagi havola orqali o'ting:</i>\n\n"
         f"🔗 <a href='{search_url}'>To'liq matnni Google'da ko'rish</a>"
     )
     await call.message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
