@@ -202,7 +202,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
         return None, title, None
 
-    return await asyncio-to-thread(_download)
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
