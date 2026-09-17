@@ -197,12 +197,20 @@ async def process_referral(new_user_id: int, referrer_id: int) -> bool:
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (new_user_id,)) as cursor:
             user = await cursor.fetchone()
-            # Agar foydalanuvchi allaqachon biriktirilgan bo'lsa
+            
+            # Agar foydalanuvchi allaqachon taklif etilgan bo'lsa
             if user and user[0] is not None:
                 return False
 
+        # Referal egasining hisobini oshiramiz
         await db.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
-        await db.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (referrer_id, new_user_id))
+        
+        # Yangi foydalanuvchining bazadagi holatini va kim taklif etganini xavfsiz saqlaymiz
+        await db.execute("""
+            INSERT INTO users (user_id, referrer_id) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET referrer_id = excluded.referrer_id
+        """, (new_user_id, referrer_id))
+        
         await db.commit()
         return True
 
