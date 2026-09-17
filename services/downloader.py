@@ -7,6 +7,7 @@ import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
+# FFmpeg va FFprobe tizim yo'llarini aniqlash
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -23,7 +24,7 @@ if not os.path.exists(FFMPEG_PATH):
     except Exception as e:
         logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
-# Pydub uchun FFmpeg va FFprobe ni ulaymiz (RuntimeWarning'ni yo'qotadi)
+# Pydub uchun yo'llarni biriktiramiz (RuntimeWarning'ni yo'qotadi)
 if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     AudioSegment.converter = FFMPEG_PATH
 if FFPROBE_PATH and os.path.exists(FFPROBE_PATH):
@@ -85,7 +86,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios']
+                'player_client': ['mweb', 'android', 'ios', 'web']
             }
         }
     })
@@ -149,53 +150,58 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        ydl_opts_fast = _get_active_opts({
-            'format': 'bestaudio/bestaudio*/best',
+        # 1-Urinish: Oddiy universal formatni tanlash (Requested format xatosini chetlab o'tish uchun)
+        ydl_opts_1 = _get_active_opts({
+            'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'android', 'ios']
+                    'player_client': ['android', 'ios', 'mweb', 'web']
                 }
             }
         })
 
         if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-            ydl_opts_fast['postprocessors'] = [{
+            ydl_opts_1['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_1) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
         except Exception as e:
-            logging.error(f"1-bosqich yuklash xatosi: {e}")
+            logging.error(f"1-usulda yuklash xatosi: {e}")
 
-        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
-        if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
-            return expected_mp3, title, None
-
+        # Fayl saqlanganini tekshirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
 
-        ydl_opts_fallback = _get_active_opts({
+        # 2-Urinish (Fallback): Formatni cheklamagan holda to'g'ridan-to'g'ri yuklash
+        ydl_opts_2 = _get_active_opts({
             'format': 'best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web']
+                }
+            }
         })
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_2) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
         except Exception as e:
-            logging.error(f"Fallback yuklash xatosi: {e}")
+            logging.error(f"2-usulda (Fallback) yuklash xatosi: {e}")
 
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
@@ -216,7 +222,7 @@ async def download_media(url: str) -> dict:
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios'],
+                'player_client': ['mweb', 'android', 'ios', 'web'],
             }
         }
     })
