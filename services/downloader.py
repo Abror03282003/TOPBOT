@@ -136,7 +136,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
         # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash
         ydl_opts_mp3 = _get_active_opts({
-            'format': 'bestaudio/best',  # Format qidirish moslashuvchanlashtirildi
+            'format': 'bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
@@ -205,7 +205,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
 async def download_media(url: str) -> dict:
     """Video yuklab olish (YouTube/Instagram)"""
-    # Cheklovlar olib tashlandi: har qanday mavjud formatdagi eng yaxshi MP4/Video olinadi
     ydl_opts = _get_active_opts({
         'format': 'bestvideo+bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
