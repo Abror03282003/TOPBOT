@@ -78,8 +78,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios'],
-                'skip': ['hls', 'dash']
+                'player_client': ['mweb', 'android', 'ios']
             }
         }
     })
@@ -129,7 +128,6 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
-    # 1. Bazadan keshni tekshirish (mavjud funksiya saqlandi)
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -144,15 +142,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # FFmpeg bo'lsa MP3 ga aylantirish, bo'lmasa eng sifatli audioni o'zini yuklash
+        # 1-Bosqich: Barcha audio va umumiy formatlarni qamrab oluvchi moslashuvchan format
         ydl_opts_fast = _get_active_opts({
-            'format': 'bestaudio/best',
+            'format': 'bestaudio/bestaudio*/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios'],
-                    'skip': ['hls', 'dash']
+                    'player_client': ['mweb', 'android', 'ios']
                 }
             }
         })
@@ -170,30 +167,42 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
         except Exception as e:
-            logging.error(f"Yuklashda xatolik: {e}")
+            logging.error(f"1-bosqich yuklash xatosi: {e}")
 
         # 1. MP3 fayli mavjudligini tekshirish
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
             return expected_mp3, title, None
 
-        # 2. Boshqa har qanday yuklangan formatni (m4a, webm, opp) izlash
+        # 2. Har qanday yuklangan kengaytmali faylni tekshirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
 
-        # 3. Zaxira: Oxirgi o'zgartirilgan faylni topish
-        all_files = [os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR) if not f.endswith('.part') and not f.endswith('.ytdl')]
-        if all_files:
-            latest_file = max(all_files, key=os.path.getmtime)
-            if os.path.exists(latest_file) and os.path.getsize(latest_file) > 0:
-                return latest_file, title, None
+        # 2-Bosqich: Cheklovlarsiz qayta urinish (Fall-back)
+        ydl_opts_fallback = _get_active_opts({
+            'format': 'best',
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
+        })
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info and isinstance(info, dict):
+                    title = info.get('title', 'Audio Track')
+        except Exception as e:
+            logging.error(f"Fallback yuklash xatosi: {e}")
+
+        # Qayta fayllarni tekshirish
+        files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
+        for f in files:
+            if os.path.exists(f) and os.path.getsize(f) > 0:
+                return f, title, None
 
         return None, title, None
 
-    return await asyncio.to_thread(_download)
+    return await asyncio-to-thread(_download)
 
 
 async def download_media(url: str) -> dict:
@@ -202,10 +211,10 @@ async def download_media(url: str) -> dict:
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
         'max_filesize': 50 * 1024 * 1024,
         'merge_output_format': 'mp4',
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios'],
+                'player_client': ['mweb', 'android', 'ios'],
             }
         }
     })
