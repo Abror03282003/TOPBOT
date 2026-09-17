@@ -18,13 +18,15 @@ SEARCH_CACHE = {}
 
 
 def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
-    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar."""
-    safe_name = song_name[:25]
+    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar (64 baytlik limit xavfsizligi bilan)."""
+    # callback_data 64 baytdan oshib ketmasligi uchun nomini qisqartiramiz
+    safe_name = song_name[:20]
     encoded_name = urllib.parse.quote(safe_name)
     
     keyboard = [
         [
-            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"lyr_{encoded_name}")
+            # 'lyr_' o'rniga qisqa 'l:' ishlatamiz
+            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"l:{encoded_name}")
         ],
         [
             InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
@@ -78,7 +80,7 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
         
     keyboard = []
     
-    # 1-qator (1, 2, 3, 4, 5) - callback_data 'd:' formatiga o'tkazildi (64 bayt limitidan oshmaslik uchun)
+    # 1-qator (1, 2, 3, 4, 5)
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
         row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"d:{search_id}:{real_idx}"))
@@ -274,7 +276,6 @@ async def handle_identify_song(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("d:") | F.data.startswith("dl_"))
 async def handle_download_callback(call: CallbackQuery):
-    # Har ikkala formatni (d: va dl_) qo'llab-quvvatlaydi
     if call.data.startswith("d:"):
         parts = call.data.split(":")
     else:
@@ -301,7 +302,7 @@ async def handle_download_callback(call: CallbackQuery):
 
     send_title = item.get('title', 'Audio Track')
 
-    # 1. KESH TEKSHIRISH (Instant yuborish)
+    # 1. KESH TEKSHIRISH
     cached_file_id = await get_cached_file(track_id_or_url)
     if cached_file_id:
         await call.answer("⚡ Instant yuborilmoqda...")
@@ -313,7 +314,7 @@ async def handle_download_callback(call: CallbackQuery):
         return
 
     # 2. KESHDA BO'LMASA -> YouTube'dan yuklab oladi
-    await call.answer(f"⏳ '{send_title[:20]}' yuklanmoqda...")
+    await call.answer(f"⏳ Yuklanmoqda...")
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
@@ -347,9 +348,14 @@ async def handle_download_callback(call: CallbackQuery):
         await status_msg.edit_text(f"❌ Audio yuklashda xatolik: {e}")
 
 
-@router.callback_query(F.data.startswith("lyr_"))
+@router.callback_query(F.data.startswith("l:") | F.data.startswith("lyr_"))
 async def handle_lyrics_callback(call: CallbackQuery):
-    song_name = urllib.parse.unquote(call.data.replace("lyr_", ""))
+    if call.data.startswith("l:"):
+        raw_name = call.data.replace("l:", "")
+    else:
+        raw_name = call.data.replace("lyr_", "")
+
+    song_name = urllib.parse.unquote(raw_name)
     await call.answer("📜 Matn tayyorlanmoqda...")
     
     query = urllib.parse.quote(f"{song_name} lyrics matni")
@@ -401,5 +407,4 @@ async def handle_close_callback(call: CallbackQuery):
     if search_id in SEARCH_CACHE:
         del SEARCH_CACHE[search_id]
     await call.message.delete()
-    await call.answer("O'chirildi")
     await call.answer("O'chirildi")
