@@ -4,6 +4,7 @@ import shutil
 import asyncio
 import logging
 import yt_dlp
+from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
@@ -21,6 +22,12 @@ if not os.path.exists(FFMPEG_PATH):
             FFPROBE_PATH = FFMPEG_PATH
     except Exception as e:
         logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
+
+# Pydub uchun FFmpeg va FFprobe ni ulaymiz (RuntimeWarning'ni yo'qotadi)
+if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+    AudioSegment.converter = FFMPEG_PATH
+if FFPROBE_PATH and os.path.exists(FFPROBE_PATH):
+    AudioSegment.ffprobe = FFPROBE_PATH
 
 DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -142,7 +149,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # 1-Bosqich: Barcha audio va umumiy formatlarni qamrab oluvchi moslashuvchan format
         ydl_opts_fast = _get_active_opts({
             'format': 'bestaudio/bestaudio*/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
@@ -169,19 +175,16 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         except Exception as e:
             logging.error(f"1-bosqich yuklash xatosi: {e}")
 
-        # 1. MP3 fayli mavjudligini tekshirish
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
             return expected_mp3, title, None
 
-        # 2. Har qanday yuklangan kengaytmali faylni tekshirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
 
-        # 2-Bosqich: Cheklovlarsiz qayta urinish (Fall-back)
         ydl_opts_fallback = _get_active_opts({
             'format': 'best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
@@ -194,7 +197,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         except Exception as e:
             logging.error(f"Fallback yuklash xatosi: {e}")
 
-        # Qayta fayllarni tekshirish
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
