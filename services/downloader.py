@@ -44,7 +44,6 @@ def _ensure_cookies_file():
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
-        # Fayl allaqachon mavjud va bir xil bo'lsa, qayta yozmaymiz
         if os.path.exists(COOKIES_PATH):
             try:
                 with open(COOKIES_PATH, "r", encoding="utf-8") as f:
@@ -82,14 +81,14 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web_creator'],
+                'player_client': ['android', 'ios'],
                 'skip': ['hls', 'dash']
             }
         }
     })
 
     def _search():
-        # 1-urinish: YouTube bo'yicha tezkor qidiruv
+        # 1-urinish: YouTube
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -133,13 +132,9 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
-    """
-    YouTube ID yoki URL orqali audioni yuklab olish.
-    Qaytaradi: (fayl_yo'li_yoki_None, sarlavha, cached_file_id_yoki_None)
-    """
+    """YouTube ID yoki URL orqali audioni yuklab olish."""
     youtube_id = str(video_id_or_url)
     
-    # 0-Bosqich: Baza (Kesh)ni tekshiramiz
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -154,14 +149,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # Ultra-tezkor yuklash sozlamasi (Re-encoding/konvertatsiyasiz)
+        # Format tanlash yumshatildi (bestaudio/* format har qanday audio oqimini oladi)
         ydl_opts_fast = _get_active_opts({
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'format': 'bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'web_creator'],
+                    'player_client': ['android', 'ios'],
                     'skip': ['hls', 'dash']
                 }
             }
@@ -175,14 +170,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         except Exception as e:
             logging.error(f"Yuklashda xatolik: {e}")
 
-        # Tayyor faylni qidirish (.part bo'lmagan fayllarni olamiz)
+        # Tayyor faylni qidirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
 
-        # Zaxira opsiyasi: Eng oxirgi yuklangan to'liq fayl
+        # Zaxira fayl qidirish
         all_files = [
             f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")) 
             if not f.endswith('.part') and not f.endswith('.ytdl')
@@ -200,14 +195,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 async def download_media(url: str) -> dict:
     """Video yuklab olish (YouTube/Instagram)"""
     ydl_opts = _get_active_opts({
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo+bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'max_filesize': 50 * 1024 * 1024,
         'merge_output_format': 'mp4',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web_creator'],
+                'player_client': ['android', 'ios'],
             }
         }
     })
