@@ -1,7 +1,15 @@
+import os
 import aiosqlite
 from datetime import datetime
 
-DB_NAME = "bot_database.db"
+# Railway Volume uchun papka va baza fayli yo'li
+DB_DIR = "/app/data"
+DB_NAME = os.path.join(DB_DIR, "database.db")
+
+# Agar /app/data papkasi bo'lmasa, uni yaratish
+if not os.path.exists(DB_DIR):
+    os.makedirs(DB_DIR, exist_ok=True)
+
 
 async def init_db():
     """Baza va jadvallarni asinxron yaratish hamda ustunlarni yangilash."""
@@ -63,6 +71,7 @@ async def init_db():
 
         await db.commit()
 
+
 async def add_user(user_id: int, full_name: str, username: str = None):
     """Foydalanuvchini bazaga qo'shish va bugungi faolligini yangilash."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -77,12 +86,14 @@ async def add_user(user_id: int, full_name: str, username: str = None):
         """, (user_id, full_name, username, today))
         await db.commit()
 
+
 async def get_total_users() -> int:
     """Jami foydalanuvchilar soni."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COUNT(user_id) FROM users") as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
 
 async def get_today_active_users() -> int:
     """Bugun faol foydalanuvchilar soni."""
@@ -92,12 +103,14 @@ async def get_today_active_users() -> int:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
+
 async def get_all_user_ids() -> list[int]:
     """Barcha user_id larni olish."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             rows = await cursor.fetchall()
             return [row[0] for row in rows]
+
 
 # --- KESH FUNKSIYALARI ---
 
@@ -108,6 +121,7 @@ async def get_cached_file(youtube_id: str):
             result = await cursor.fetchone()
             return result[0] if result else None
 
+
 async def save_to_cache(youtube_id: str, file_id: str):
     """Audioni keshga saqlash."""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -116,6 +130,7 @@ async def save_to_cache(youtube_id: str, file_id: str):
             (youtube_id, file_id)
         )
         await db.commit()
+
 
 # --- REFERAL VA KONKURS FUNKSIYALARI ---
 
@@ -137,6 +152,7 @@ async def get_contest_settings():
                 }
             return {"is_active": 0, "target": 25, "prize": 50000, "end_time": None, "post_text": None, "photo_id": None}
 
+
 async def update_contest_settings(target: int, prize: int, end_time: str = None, is_active: int = 1):
     """Admin parametrlarini yangilash."""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -146,6 +162,7 @@ async def update_contest_settings(target: int, prize: int, end_time: str = None,
             WHERE id = 1
         """, (target, prize, end_time, is_active))
         await db.commit()
+
 
 async def update_contest_announcement(target: int, prize: int, end_time: str, post_text: str, photo_id: str = None):
     """Admin e'lon qilgan konkursni saqlash."""
@@ -157,17 +174,20 @@ async def update_contest_announcement(target: int, prize: int, end_time: str, po
         """, (target, prize, end_time, post_text, photo_id))
         await db.commit()
 
+
 async def stop_contest_db():
     """Konkursni to'xtatish."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE contest_settings SET is_active = 0 WHERE id = 1")
         await db.commit()
 
+
 async def reset_referrals():
     """Yangi konkurs uchun barcha foydalanuvchilar referal hisobini nollash."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE users SET referrals_count = 0")
         await db.commit()
+
 
 async def process_referral(new_user_id: int, referrer_id: int) -> bool:
     """Yangi foydalanuvchini taklif qilgan odamga biriktirish va hisoblash."""
@@ -186,6 +206,7 @@ async def process_referral(new_user_id: int, referrer_id: int) -> bool:
         await db.commit()
         return True
 
+
 async def get_my_referrals_list(user_id: int, limit: int = 10):
     """Foydalanuvchining shaxsiy taklif qilgan do'stlari ro'yxatini olish."""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -194,6 +215,7 @@ async def get_my_referrals_list(user_id: int, limit: int = 10):
             (user_id, limit)
         ) as cursor:
             return await cursor.fetchall()
+
 
 async def get_leaderboard(limit: int = 10):
     """TOP-10 ko'p referal yig'ganlar reytingini olish."""
@@ -204,6 +226,7 @@ async def get_leaderboard(limit: int = 10):
         ) as cursor:
             return await cursor.fetchall()
 
+
 async def get_top3_leaderboard():
     """TOP-3 yetakchilarni olish."""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -211,6 +234,7 @@ async def get_top3_leaderboard():
             "SELECT full_name, referrals_count FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT 3"
         ) as cursor:
             return await cursor.fetchall()
+
 
 async def get_winner():
     """Eng ko'p referal yig'gan g'olibni aniqlash."""
