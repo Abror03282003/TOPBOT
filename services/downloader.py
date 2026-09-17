@@ -50,16 +50,11 @@ def _ensure_cookies_file():
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
-        if os.path.exists(COOKIES_PATH):
-            try:
-                with open(COOKIES_PATH, "r", encoding="utf-8") as f:
-                    if f.read().strip() == cookies_env_cleaned:
-                        return
-            except Exception:
-                pass
         try:
+            # Cookies faylini har doim yangilab yozamiz (eski yoki bo'sh bo'lib qolmasligi uchun)
             with open(COOKIES_PATH, "w", encoding="utf-8") as f:
                 f.write(cookies_env_cleaned)
+            logging.info("🍪 YouTube cookies muvaffaqiyatli cookies.txt fayliga yozildi.")
         except Exception as e:
             logging.error(f"Cookies faylini yozishda xatolik: {e}")
 
@@ -150,7 +145,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # 1-Urinish: Oddiy universal formatni tanlash (Requested format xatosini chetlab o'tish uchun)
+        # 1-Urinish: Universal format va clientlar orqali yuklash
         ydl_opts_1 = _get_active_opts({
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
