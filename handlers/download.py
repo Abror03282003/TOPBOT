@@ -312,7 +312,9 @@ async def handle_download_callback(call: CallbackQuery):
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
-        file_path, title = await download_audio_by_id(track_id_or_url)
+        # XATOLIK BURALDA TO'G'RILANDI: *_ yordamida funksiya qaytargan istalgan sonli qiymatlar xavfsiz qabul qilinadi
+        file_path, title, *_ = await download_audio_by_id(track_id_or_url)
+        
         if title and title != "Audio Track":
             send_title = title
         
