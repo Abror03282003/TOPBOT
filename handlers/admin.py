@@ -10,16 +10,15 @@ from database import (
     get_today_active_users, 
     get_all_user_ids,
     get_contest_settings,
-    update_contest_settings,
     stop_contest_db,
     get_winner,
     get_top3_leaderboard,
-    update_contest_announcement
+    update_contest_announcement,
+    reset_referrals
 )
 
 router = Router()
 
-# ⚠️ Telegram ID-ingiz
 ADMIN_ID = 1350101870  
 
 class BroadcastState(StatesGroup):
@@ -31,17 +30,17 @@ class ContestState(StatesGroup):
     waiting_for_duration = State()
     waiting_for_post_content = State()
 
-# --- TUGMALAR YARATISH FUNKSIYALARI ---
+# --- TUGMALAR ---
 
 def admin_contest_keyboard():
     keyboard = [
         [InlineKeyboardButton(text="➕ Yangi konkurs boshlash", callback_data="admin_start_contest")],
+        [InlineKeyboardButton(text="🔄 Referallarni nollash (Reset)", callback_data="admin_reset_refs")],
         [InlineKeyboardButton(text="🛑 Konkursni to'xtatish", callback_data="admin_stop_contest")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 def get_contest_post_keyboard(bot_username: str, user_id: int):
-    """Foydalanuvchilarga boradigan post ostidagi shaxsiy tugmalar."""
     ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
     share_url = f"https://t.me/share/url?url={ref_link}&text=🚀%20Botda%20daxshat%20konkurs%20boshlandi!%20Qatnashib%20pul%20yutib%20oling!"
     
@@ -60,7 +59,6 @@ def get_contest_post_keyboard(bot_username: str, user_id: int):
 
 @router.message(Command("stat"), F.from_user.id == ADMIN_ID)
 async def cmd_stat(message: Message):
-    """Foydalanuvchilar va bugungi faollik statistikasi."""
     total = await get_total_users()
     today_active = await get_today_active_users()
     
@@ -73,13 +71,11 @@ async def cmd_stat(message: Message):
 
 @router.message(Command("send"), F.from_user.id == ADMIN_ID)
 async def cmd_send(message: Message, state: FSMContext):
-    """Barcha foydalanuvchilarga xabar yuborish jarayonini boshlash."""
     await state.set_state(BroadcastState.waiting_for_message)
     await message.answer("📢 Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring (Matn, rasm yoki video):")
 
 @router.message(BroadcastState.waiting_for_message, F.from_user.id == ADMIN_ID)
 async def process_broadcast(message: Message, state: FSMContext):
-    """Xabarni barchaga tarqatish."""
     await state.clear()
     users = await get_all_user_ids()
     await message.answer(f"⏳ Xabar {len(users)} ta foydalanuvchiga yuborilmoqda...")
@@ -102,11 +98,10 @@ async def process_broadcast(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- KONKURS BOSHGARUVI ---
+# --- KONKURS BOSHQARUVI ---
 
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin_panel(message: Message):
-    """Admin panel orqali konkurs holatini ko'rish."""
     contest = await get_contest_settings()
     status = "🟢 Faol" if contest["is_active"] else "🔴 To'xtatilgan"
     
@@ -118,6 +113,11 @@ async def admin_panel(message: Message):
         f"<b>Tugash vaqti:</b> {contest['end_time'] or 'Belgilanmagan'}"
     )
     await message.answer(text, reply_markup=admin_contest_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "admin_reset_refs", F.from_user.id == ADMIN_ID)
+async def reset_refs_call(call: CallbackQuery):
+    await reset_referrals()
+    await call.answer("✅ Barcha foydalanuvchilarning referallari nollab chiqildi!", show_alert=True)
 
 @router.callback_query(F.data == "admin_start_contest", F.from_user.id == ADMIN_ID)
 async def start_contest_flow(call: CallbackQuery, state: FSMContext):
@@ -166,7 +166,6 @@ async def process_duration(message: Message, state: FSMContext):
 
 @router.message(ContestState.waiting_for_post_content, F.from_user.id == ADMIN_ID)
 async def process_post_content(message: Message, state: FSMContext, bot: Bot):
-    """Admin yuborgan postni qabul qilish, bazaga saqlash va barcha foydalanuvchilarga tarqatish."""
     data = await state.get_data()
     target = data['target']
     prize = data['prize']
@@ -229,7 +228,6 @@ async def process_post_content(message: Message, state: FSMContext, bot: Bot):
     asyncio.create_task(auto_finish_contest(seconds_to_wait, bot))
 
 async def auto_finish_contest(wait_seconds: int, bot: Bot):
-    """Vaqt tugaganda konkursni yopib, HAM ADMINGA, HAM BUTUN BOTGA xabar yuborish."""
     await asyncio.sleep(wait_seconds)
     
     contest = await get_contest_settings()
@@ -274,7 +272,6 @@ async def auto_finish_contest(wait_seconds: int, bot: Bot):
 
 @router.callback_query(F.data == "admin_stop_contest", F.from_user.id == ADMIN_ID)
 async def stop_contest_callback(call: CallbackQuery, bot: Bot):
-    """Konkursni admin tomonidan muddatidan oldin to'xtatish."""
     contest = await get_contest_settings()
 
     if not contest["is_active"]:
