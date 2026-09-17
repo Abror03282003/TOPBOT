@@ -1,6 +1,6 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
-from database import get_contest_settings, get_leaderboard, get_top3_leaderboard, aiosqlite, DB_NAME
+from database import get_contest_settings, get_leaderboard, get_top3_leaderboard, get_my_referrals_list, aiosqlite, DB_NAME
 
 router = Router()
 
@@ -42,9 +42,17 @@ async def send_user_ref_link(call: CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{call.from_user.id}"
     
+    # Do'stlar ro'yxatini ham birgalikda ko'rsatish
+    my_refs = await get_my_referrals_list(call.from_user.id, limit=5)
+    refs_text = ""
+    if my_refs:
+        refs_text = "\n\n👥 <b>Oxirgi taklif qilgan do'stlaringiz:</b>\n"
+        for name, joined_at in my_refs:
+            refs_text += f"• {name}\n"
+
     text = (
         f"🔑 <b>Sizning shaxsiy taklif havolangiz:</b>\n\n"
-        f"<code>{ref_link}</code>\n\n"
+        f"<code>{ref_link}</code>{refs_text}\n\n"
         f"💡 Ushbu havolani do'stlaringizga tarqating va konkursda g'olib bo'ling!"
     )
     await call.message.answer(text, parse_mode="HTML", disable_web_page_preview=True)
