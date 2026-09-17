@@ -8,7 +8,6 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from shazamio import Shazam
 
-# services/downloader.py faylingizdagi funksiyalarni integratsiya qilamiz
 from services.downloader import search_tracks, download_media, download_audio_by_id
 from database import add_user, get_cached_file, save_to_cache  # Asinxron kesh funksiyalari
 
@@ -79,10 +78,10 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
         
     keyboard = []
     
-    # 1-qator (1, 2, 3, 4, 5)
+    # 1-qator (1, 2, 3, 4, 5) - callback_data 'd:' formatiga o'tkazildi (64 bayt limitidan oshmaslik uchun)
     row1 = []
     for btn_num, real_idx in enumerate(range(start_idx, min(start_idx + 5, end_idx)), 1):
-        row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
+        row1.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"d:{search_id}:{real_idx}"))
     if row1:
         keyboard.append(row1)
         
@@ -90,7 +89,7 @@ def render_page(results: list[dict], search_id: str, page: int = 0) -> tuple[str
     if end_idx > start_idx + 5:
         row2 = []
         for btn_num, real_idx in enumerate(range(start_idx + 5, end_idx), 6):
-            row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"dl_{search_id}_{real_idx}"))
+            row2.append(InlineKeyboardButton(text=str(btn_num), callback_data=f"d:{search_id}:{real_idx}"))
         keyboard.append(row2)
         
     # Navigatsiya (⬅️ ❌ ➡️)
@@ -273,9 +272,14 @@ async def handle_identify_song(call: CallbackQuery):
         await status_msg.edit_text("❌ Video topilmadi.")
 
 
-@router.callback_query(F.data.startswith("dl_"))
+@router.callback_query(F.data.startswith("d:") | F.data.startswith("dl_"))
 async def handle_download_callback(call: CallbackQuery):
-    parts = call.data.split("_")
+    # Har ikkala formatni (d: va dl_) qo'llab-quvvatlaydi
+    if call.data.startswith("d:"):
+        parts = call.data.split(":")
+    else:
+        parts = call.data.split("_")
+
     if len(parts) < 3:
         await call.answer("❌ Noto'g'ri so'rov.", show_alert=True)
         return
@@ -297,12 +301,10 @@ async def handle_download_callback(call: CallbackQuery):
 
     send_title = item.get('title', 'Audio Track')
 
-    # -------------------------------------------------------------
-    # 1. KESH TEKSHIRISH (await qo'shildi)
-    # -------------------------------------------------------------
+    # 1. KESH TEKSHIRISH (Instant yuborish)
     cached_file_id = await get_cached_file(track_id_or_url)
     if cached_file_id:
-        await call.answer(f"⚡ Instant yuborilmoqda...")
+        await call.answer("⚡ Instant yuborilmoqda...")
         await call.message.answer_audio(
             audio=cached_file_id,
             title=send_title,
@@ -310,9 +312,7 @@ async def handle_download_callback(call: CallbackQuery):
         )
         return
 
-    # -------------------------------------------------------------
     # 2. KESHDA BO'LMASA -> YouTube'dan yuklab oladi
-    # -------------------------------------------------------------
     await call.answer(f"⏳ '{send_title[:20]}' yuklanmoqda...")
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
@@ -330,9 +330,7 @@ async def handle_download_callback(call: CallbackQuery):
                 reply_markup=build_song_keyboard(send_title)
             )
             
-            # -------------------------------------------------------------
-            # 3. KESHGA SAQLASH (await qo'shildi)
-            # -------------------------------------------------------------
+            # 3. KESHGA SAQLASH
             if sent_audio.audio and sent_audio.audio.file_id:
                 await save_to_cache(track_id_or_url, sent_audio.audio.file_id)
 
@@ -403,4 +401,5 @@ async def handle_close_callback(call: CallbackQuery):
     if search_id in SEARCH_CACHE:
         del SEARCH_CACHE[search_id]
     await call.message.delete()
+    await call.answer("O'chirildi")
     await call.answer("O'chirildi")
