@@ -20,7 +20,7 @@ else:
 if ffmpeg_dir:
     os.environ["PATH"] += os.pathsep + ffmpeg_dir
 
-# 2. Pydub sozlamalariga FFmpeg va FFprobe ni to'g'ridan-to'g'ri biriktirish (Warning xatosini yo'qotish uchun)
+# 2. Pydub sozlamalariga FFmpeg va FFprobe ni to'g'ridan-to'g'ri biriktirish
 try:
     from pydub import AudioSegment
     if ffmpeg_bin:
@@ -46,11 +46,14 @@ if YOUTUBE_COOKIES:
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # Ma'lumotlar bazasini asinxron ishga tushirish (users va audio_cache jadvallarini yaratadi)
+    # Ma'lumotlar bazasini asinxron ishga tushirish
     await init_db()
     
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
+
+    # Telegram serveridagi eski kutilayotgan konfliktlarni tozalash
+    await bot.delete_webhook(drop_pending_updates=True)
 
     # Routerlarni ulash
     dp.include_router(admin.router)
@@ -61,7 +64,5 @@ async def main():
     logging.info("Bot muvaffaqiyatli ishga tushdi!")
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
 if __name__ == "__main__":
     asyncio.run(main())
