@@ -191,7 +191,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                         if os.path.exists(f) and os.path.getsize(f) > 0:
                             return f, title, None
                 except Exception as e:
-                    # Loglarni to'ldirib yubormaslik uchun faqat qisqa ogohlantirish yoziladi
                     continue
 
         return None, title, None
