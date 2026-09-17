@@ -1,6 +1,6 @@
-from aiogram import Router, F
-from aiogram.types import Message
-from database import get_contest_settings, get_leaderboard, aiosqlite, DB_NAME
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from database import get_contest_settings, get_leaderboard, get_top3_leaderboard, aiosqlite, DB_NAME
 
 router = Router()
 
@@ -8,7 +8,7 @@ router = Router()
 async def show_contest(message: Message):
     contest = await get_contest_settings()
     bot_info = await message.bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={message.from_user.id}"
+    ref_link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
 
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT referrals_count FROM users WHERE user_id = ?", (message.from_user.id,)) as cursor:
@@ -36,11 +36,6 @@ async def show_contest(message: Message):
     )
 
     await message.answer(text, parse_mode="HTML")
-from aiogram import Router, F, Bot
-from aiogram.types import CallbackQuery
-from database import get_top3_leaderboard, get_contest_settings
-
-# Agar router yaratilmagan bo'lsa: router = Router()
 
 @router.callback_query(F.data == "get_my_ref_link")
 async def send_user_ref_link(call: CallbackQuery, bot: Bot):
