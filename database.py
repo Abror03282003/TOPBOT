@@ -6,7 +6,7 @@ DB_NAME = "bot_database.db"
 async def init_db():
     """Baza va jadvallarni asinxron yaratish hamda ustunlarni yangilash."""
     async with aiosqlite.connect(DB_NAME) as db:
-        # Users jadvalini yaratish
+        # Users jadvali
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -19,7 +19,7 @@ async def init_db():
             )
         """)
         
-        # Audio kesh jadvalini yaratish
+        # Audio kesh jadvali
         await db.execute("""
             CREATE TABLE IF NOT EXISTS audio_cache (
                 youtube_id TEXT PRIMARY KEY,
@@ -40,13 +40,13 @@ async def init_db():
             )
         """)
         
-        # Boshlang'ich konkurs sozlamasini kiritish (agar bo'lmasa)
+        # Boshlang'ich konkurs sozlamasi
         await db.execute("""
             INSERT OR IGNORE INTO contest_settings (id, is_active, target_referrals, prize_amount)
             VALUES (1, 0, 25, 50000)
         """)
         
-        # Eski bazalarda ustunlar bo'lmasa, ularni xavfsiz qo'shish
+        # Eski bazalar uchun ustunlarni xavfsiz qo'shish
         columns_to_add = [
             ("users", "last_active DATE DEFAULT CURRENT_DATE"),
             ("users", "referrer_id INTEGER DEFAULT NULL"),
@@ -78,14 +78,14 @@ async def add_user(user_id: int, full_name: str, username: str = None):
         await db.commit()
 
 async def get_total_users() -> int:
-    """Jami botga start bosgan foydalanuvchilar soni."""
+    """Jami foydalanuvchilar soni."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COUNT(user_id) FROM users") as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
 async def get_today_active_users() -> int:
-    """Bugun botdan foydalangan faol foydalanuvchilar soni."""
+    """Bugun faol foydalanuvchilar soni."""
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COUNT(user_id) FROM users WHERE last_active = ?", (today,)) as cursor:
@@ -93,7 +93,7 @@ async def get_today_active_users() -> int:
             return row[0] if row else 0
 
 async def get_all_user_ids() -> list[int]:
-    """Reklama va e'lonlar yuborish uchun barcha user_id larni olish."""
+    """Barcha user_id larni olish."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT user_id FROM users") as cursor:
             rows = await cursor.fetchall()
@@ -138,7 +138,7 @@ async def get_contest_settings():
             return {"is_active": 0, "target": 25, "prize": 50000, "end_time": None, "post_text": None, "photo_id": None}
 
 async def update_contest_settings(target: int, prize: int, end_time: str = None, is_active: int = 1):
-    """Admin tomonidan konkurs parametrlarini va vaqtni yangilash."""
+    """Admin parametrlarini yangilash."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             UPDATE contest_settings 
@@ -148,7 +148,7 @@ async def update_contest_settings(target: int, prize: int, end_time: str = None,
         await db.commit()
 
 async def update_contest_announcement(target: int, prize: int, end_time: str, post_text: str, photo_id: str = None):
-    """Admin yaratgan konkurs posti ma'lumotlarini saqlash."""
+    """Admin e'lon qilgan konkursni saqlash."""
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             UPDATE contest_settings 
@@ -163,24 +163,37 @@ async def stop_contest_db():
         await db.execute("UPDATE contest_settings SET is_active = 0 WHERE id = 1")
         await db.commit()
 
+async def reset_referrals():
+    """Yangi konkurs uchun barcha foydalanuvchilar referal hisobini nollash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET referrals_count = 0")
+        await db.commit()
+
 async def process_referral(new_user_id: int, referrer_id: int) -> bool:
-    """Yangi foydalanuvchini taklif qilgan odamga referal sifatida biriktirish."""
+    """Yangi foydalanuvchini taklif qilgan odamga biriktirish va hisoblash."""
     if new_user_id == referrer_id:
         return False
 
     async with aiosqlite.connect(DB_NAME) as db:
-        # Foydalanuvchi ilgaridan bormi va kimdir uni taklif qilganmi tekshirish
         async with db.execute("SELECT referrer_id FROM users WHERE user_id = ?", (new_user_id,)) as cursor:
             user = await cursor.fetchone()
+            # Agar foydalanuvchi allaqachon biriktirilgan bo'lsa
             if user and user[0] is not None:
-                return False  # Allaqachon boshqa referali bor
+                return False
 
-        # Taklif qilgan odamning referal hisobini 1 ga oshirish
         await db.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (referrer_id,))
-        # Yangi foydalanuvchiga taklif qiluvchi ID-sini yozib qo'yish
         await db.execute("UPDATE users SET referrer_id = ? WHERE user_id = ?", (referrer_id, new_user_id))
         await db.commit()
         return True
+
+async def get_my_referrals_list(user_id: int, limit: int = 10):
+    """Foydalanuvchining shaxsiy taklif qilgan do'stlari ro'yxatini olish."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute(
+            "SELECT full_name, joined_at FROM users WHERE referrer_id = ? ORDER BY joined_at DESC LIMIT ?",
+            (user_id, limit)
+        ) as cursor:
+            return await cursor.fetchall()
 
 async def get_leaderboard(limit: int = 10):
     """TOP-10 ko'p referal yig'ganlar reytingini olish."""
@@ -192,7 +205,7 @@ async def get_leaderboard(limit: int = 10):
             return await cursor.fetchall()
 
 async def get_top3_leaderboard():
-    """Top 3 talik yetakchilarni olish"""
+    """TOP-3 yetakchilarni olish."""
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
             "SELECT full_name, referrals_count FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT 3"
