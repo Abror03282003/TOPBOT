@@ -51,7 +51,6 @@ def _ensure_cookies_file():
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
         try:
-            # Cookies faylini har doim yangilab yozamiz (eski yoki bo'sh bo'lib qolmasligi uchun)
             with open(COOKIES_PATH, "w", encoding="utf-8") as f:
                 f.write(cookies_env_cleaned)
             logging.info("🍪 YouTube cookies muvaffaqiyatli cookies.txt fayliga yozildi.")
@@ -145,14 +144,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # 1-Urinish: Universal format va clientlar orqali yuklash
+        # 1-Urinish: Moslashuvchan format tanlash (Requested format xatosini oldini olish uchun ba/b)
         ydl_opts_1 = _get_active_opts({
-            'format': 'bestaudio/best',
+            'format': 'ba/b',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'web']
+                    'player_client': ['android', 'web', 'mweb']
                 }
             }
         })
@@ -185,7 +184,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web']
+                    'player_client': ['mweb', 'android']
                 }
             }
         })
