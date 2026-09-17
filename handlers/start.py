@@ -43,9 +43,19 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
             referrer_id = int(args)
 
         if referrer_id and referrer_id != user_id:
-            await process_referral(new_user_id=user_id, referrer_id=referrer_id)
+            is_new = await process_referral(new_user_id=user_id, referrer_id=referrer_id)
+            # Yangi referal biriktirilsa taklif qilganga bildirishnoma yuborish
+            if is_new:
+                try:
+                    await bot.send_message(
+                        chat_id=referrer_id,
+                        text=f"🎉 <b>Yangi taklif!</b>\n\n<b>{full_name}</b> sizning havolangiz orqali botga kirdi! +1 referal taqdim etildi.",
+                        parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
 
-    # 3. Salomlashuv xabari (HTML parse_mode bilan tugatilgan)
+    # 3. Salomlashuv xabari
     await message.answer(
         "Salom! 👋 Men <b>TopBot</b>man.\n\n"
         "Menga Instagram, TikTok, YouTube, Facebook yoki Twitter/X "
