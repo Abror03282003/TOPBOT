@@ -43,9 +43,18 @@ def _ensure_cookies_file():
     """Railway environment variables orqali cookies.txt yaratish."""
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
+        cookies_env_cleaned = cookies_env.strip()
+        # Fayl allaqachon mavjud va bir xil bo'lsa, qayta yozmaymiz
+        if os.path.exists(COOKIES_PATH):
+            try:
+                with open(COOKIES_PATH, "r", encoding="utf-8") as f:
+                    if f.read().strip() == cookies_env_cleaned:
+                        return
+            except Exception:
+                pass
         try:
             with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-                f.write(cookies_env.strip())
+                f.write(cookies_env_cleaned)
         except Exception as e:
             logging.error(f"Cookies faylini yozishda xatolik: {e}")
 
@@ -73,7 +82,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'tv'],
+                'player_client': ['android', 'ios', 'mweb', 'web_creator'],
                 'skip': ['hls', 'dash']
             }
         }
@@ -130,14 +139,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     """
     youtube_id = str(video_id_or_url)
     
-    # 0-Bosqich: Baza (Kesh)ni tekshiramiz (0.5s)
+    # 0-Bosqich: Baza (Kesh)ni tekshiramiz
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
 
     if str(video_id_or_url).startswith("http"):
         url = video_id_or_url
-        file_prefix = "sc_" + str(hash(video_id_or_url))[-6:]
+        file_prefix = "sc_" + str(abs(hash(video_id_or_url)))[-6:]
     else:
         url = f"https://www.youtube.com/watch?v={video_id_or_url}"
         file_prefix = str(video_id_or_url)
@@ -149,10 +158,10 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         ydl_opts_fast = _get_active_opts({
             'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'android', 'tv'],
+                    'player_client': ['android', 'ios', 'mweb', 'web_creator'],
                     'skip': ['hls', 'dash']
                 }
             }
@@ -166,18 +175,21 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         except Exception as e:
             logging.error(f"Yuklashda xatolik: {e}")
 
-        # Tayyor faylni qidirish
+        # Tayyor faylni qidirish (.part bo'lmagan fayllarni olamiz)
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-        files = glob.glob(pattern)
+        files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
-            if os.path.getsize(f) > 0:
+            if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
 
-        # Zaxira opsiyasi
-        all_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
+        # Zaxira opsiyasi: Eng oxirgi yuklangan to'liq fayl
+        all_files = [
+            f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")) 
+            if not f.endswith('.part') and not f.endswith('.ytdl')
+        ]
         if all_files:
             latest_file = max(all_files, key=os.path.getmtime)
-            if os.path.getsize(latest_file) > 0:
+            if os.path.exists(latest_file) and os.path.getsize(latest_file) > 0:
                 return latest_file, title, None
 
         return None, title, None
@@ -188,10 +200,16 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 async def download_media(url: str) -> dict:
     """Video yuklab olish (YouTube/Instagram)"""
     ydl_opts = _get_active_opts({
-        'format': 'bestvideo+bestaudio/best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'max_filesize': 50 * 1024 * 1024,
         'merge_output_format': 'mp4',
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb', 'web_creator'],
+            }
+        }
     })
 
     def _download():
@@ -205,11 +223,12 @@ async def download_media(url: str) -> dict:
                     if os.path.exists(f"{base}.mp4"):
                         filename = f"{base}.mp4"
 
-                    return {
-                        "file_path": filename,
-                        "title": info.get("title", "Video"),
-                        "id": info.get("id")
-                    }
+                    if os.path.exists(filename) and os.path.getsize(filename) > 0:
+                        return {
+                            "file_path": filename,
+                            "title": info.get("title", "Video"),
+                            "id": info.get("id")
+                        }
         except Exception as e:
             logging.error(f"Media download error: {e}")
 
