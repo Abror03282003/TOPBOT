@@ -25,12 +25,12 @@ def get_contest_post_keyboard(bot_username: str, user_id: int):
 async def cmd_start(message: Message, command: CommandObject, bot: Bot):
     user_id = message.from_user.id
     full_name = message.from_user.full_name
-    username = message.from_user.username
+    username = message.from_user.username or ""
 
     # 1. Foydalanuvchini bazaga qo'shish
     await add_user(user_id, full_name, username)
 
-    # 2. Referal havolasini tekshirish (/start ref_123456 yoki /start 123456)
+    # 2. Referal havolasini tekshirish
     args = command.args
     if args:
         referrer_id = None
@@ -44,7 +44,6 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 
         if referrer_id and referrer_id != user_id:
             is_new = await process_referral(new_user_id=user_id, referrer_id=referrer_id)
-            # Yangi referal biriktirilsa taklif qilganga bildirishnoma yuborish
             if is_new:
                 try:
                     await bot.send_message(
@@ -61,11 +60,12 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
         "Menga Instagram, TikTok, YouTube, Facebook yoki Twitter/X "
         "linkini yuboring — videoni yoki audioni yuklab beraman.\n\n"
         "Buyruqlar:\n"
-        "/help — yordam",
+        "/help — yordam\n"
+        "/contest — konkurs va reyting",
         parse_mode="HTML"
     )
 
-    # 4. Agar faol konkurs bo'lsa, avtomatik konkurs postini yuborish
+    # 4. Faol konkurs bo'lsa, post yuborish
     contest = await get_contest_settings()
     if contest and contest.get("is_active"):
         bot_info = await bot.get_me()
@@ -104,10 +104,8 @@ async def cmd_start(message: Message, command: CommandObject, bot: Bot):
 async def cmd_help(message: Message):
     await message.answer(
         "📌 <b>Qanday ishlataman?</b>\n\n"
-        "1. Instagram, TikTok, YouTube va h.k. dan video linkini nusxalang\n"
-        "2. Shu linkni menga yuboring\n"
-        "3. Men videoni yuklab, sizga qaytaraman\n\n"
-        "Faqat audio (mp3) kerak bo'lsa, video yuborilgach chiqadigan "
-        "tugmalardan foydalaning.",
+        "1. Qo'shiq nomini yoki ijrochini yozib yuboring (Masalan: <i>Shoxrux Xatuba</i>)\n"
+        "2. Yoki Instagram, TikTok, YouTube linkini yuboring\n"
+        "3. Ovozli xabar (voice) yoki video-xabar yuborsangiz, Shazam orqali musiqa topib beraman!",
         parse_mode="HTML"
     )
