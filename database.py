@@ -34,7 +34,9 @@ async def init_db():
                 is_active INTEGER DEFAULT 0,
                 target_referrals INTEGER DEFAULT 25,
                 prize_amount INTEGER DEFAULT 50000,
-                end_time TEXT DEFAULT NULL
+                end_time TEXT DEFAULT NULL,
+                post_text TEXT DEFAULT NULL,
+                photo_id TEXT DEFAULT NULL
             )
         """)
         
@@ -45,20 +47,19 @@ async def init_db():
         """)
         
         # Eski bazalarda ustunlar bo'lmasa, ularni xavfsiz qo'shish
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN last_active DATE DEFAULT CURRENT_DATE")
-        except Exception:
-            pass
-
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN referrer_id INTEGER DEFAULT NULL")
-        except Exception:
-            pass
-
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN referrals_count INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        columns_to_add = [
+            ("users", "last_active DATE DEFAULT CURRENT_DATE"),
+            ("users", "referrer_id INTEGER DEFAULT NULL"),
+            ("users", "referrals_count INTEGER DEFAULT 0"),
+            ("contest_settings", "post_text TEXT DEFAULT NULL"),
+            ("contest_settings", "photo_id TEXT DEFAULT NULL")
+        ]
+        
+        for table, col in columns_to_add:
+            try:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
+            except Exception:
+                pass
 
         await db.commit()
 
@@ -119,18 +120,22 @@ async def save_to_cache(youtube_id: str, file_id: str):
 # --- REFERAL VA KONKURS FUNKSIYALARI ---
 
 async def get_contest_settings():
-    """Konkurs sozlamalarini olish."""
+    """Konkurs sozlamalarini hamda e'lon matni va rasmini olish."""
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT is_active, target_referrals, prize_amount, end_time FROM contest_settings WHERE id = 1") as cursor:
+        async with db.execute(
+            "SELECT is_active, target_referrals, prize_amount, end_time, post_text, photo_id FROM contest_settings WHERE id = 1"
+        ) as cursor:
             res = await cursor.fetchone()
             if res:
                 return {
                     "is_active": res[0],
                     "target": res[1],
                     "prize": res[2],
-                    "end_time": res[3]
+                    "end_time": res[3],
+                    "post_text": res[4],
+                    "photo_id": res[5]
                 }
-            return {"is_active": 0, "target": 25, "prize": 50000, "end_time": None}
+            return {"is_active": 0, "target": 25, "prize": 50000, "end_time": None, "post_text": None, "photo_id": None}
 
 async def update_contest_settings(target: int, prize: int, end_time: str = None, is_active: int = 1):
     """Admin tomonidan konkurs parametrlarini va vaqtni yangilash."""
@@ -140,6 +145,16 @@ async def update_contest_settings(target: int, prize: int, end_time: str = None,
             SET target_referrals = ?, prize_amount = ?, end_time = ?, is_active = ?
             WHERE id = 1
         """, (target, prize, end_time, is_active))
+        await db.commit()
+
+async def update_contest_announcement(target: int, prize: int, end_time: str, post_text: str, photo_id: str = None):
+    """Admin yaratgan konkurs posti ma'lumotlarini saqlash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("""
+            UPDATE contest_settings 
+            SET target_referrals = ?, prize_amount = ?, end_time = ?, post_text = ?, photo_id = ?, is_active = 1
+            WHERE id = 1
+        """, (target, prize, end_time, post_text, photo_id))
         await db.commit()
 
 async def stop_contest_db():
@@ -176,27 +191,6 @@ async def get_leaderboard(limit: int = 10):
         ) as cursor:
             return await cursor.fetchall()
 
-async def get_winner():
-    """Eng ko'p referal yig'gan g'olibni aniqlash."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT user_id, full_name, referrals_count FROM users ORDER BY referrals_count DESC LIMIT 1") as cursor:
-            return await cursor.fetchone()
-async def update_contest_announcement(target: int, prize: int, end_time: str, post_text: str, photo_id: str = None):
-    """Admin yaratgan konkurs posti ma'lumotlarini saqlash."""
-    async with aiosqlite.connect(DB_NAME) as db:
-        try:
-            await db.execute("ALTER TABLE contest_settings ADD COLUMN post_text TEXT")
-            await db.execute("ALTER TABLE contest_settings ADD COLUMN photo_id TEXT")
-        except Exception:
-            pass
-
-        await db.execute("""
-            UPDATE contest_settings 
-            SET target_referrals = ?, prize_amount = ?, end_time = ?, post_text = ?, photo_id = ?, is_active = 1
-            WHERE id = 1
-        """, (target, prize, end_time, post_text, photo_id))
-        await db.commit()
-
 async def get_top3_leaderboard():
     """Top 3 talik yetakchilarni olish"""
     async with aiosqlite.connect(DB_NAME) as db:
@@ -204,3 +198,9 @@ async def get_top3_leaderboard():
             "SELECT full_name, referrals_count FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT 3"
         ) as cursor:
             return await cursor.fetchall()
+
+async def get_winner():
+    """Eng ko'p referal yig'gan g'olibni aniqlash."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT user_id, full_name, referrals_count FROM users ORDER BY referrals_count DESC LIMIT 1") as cursor:
+            return await cursor.fetchone()
