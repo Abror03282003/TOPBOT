@@ -30,13 +30,25 @@ class ContestState(StatesGroup):
     waiting_for_duration = State()
     waiting_for_post_content = State()
 
+class RemindState(StatesGroup):
+    waiting_for_custom_text = State()
+
 # --- TUGMALAR ---
 
 def admin_contest_keyboard():
     keyboard = [
         [InlineKeyboardButton(text="➕ Yangi konkurs boshlash", callback_data="admin_start_contest")],
+        [InlineKeyboardButton(text="🔔 Konkursni eslatish (Remind)", callback_data="admin_remind_contest")],
         [InlineKeyboardButton(text="🔄 Referallarni nollash (Reset)", callback_data="admin_reset_refs")],
         [InlineKeyboardButton(text="🛑 Konkursni to'xtatish", callback_data="admin_stop_contest")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def remind_options_keyboard():
+    keyboard = [
+        [InlineKeyboardButton(text="🔄 Shunchaki avvalgi postni yuborish", callback_data="remind_original")],
+        [InlineKeyboardButton(text="✏️ Eslatma matnini qo'shib yuborish", callback_data="remind_custom")],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_remind")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -98,7 +110,7 @@ async def process_broadcast(message: Message, state: FSMContext):
         parse_mode="HTML"
     )
 
-# --- KONKURS BOSHQARUVI ---
+# --- KONKURS PANELI ---
 
 @router.message(Command("admin"), F.from_user.id == ADMIN_ID)
 async def admin_panel(message: Message):
@@ -118,6 +130,105 @@ async def admin_panel(message: Message):
 async def reset_refs_call(call: CallbackQuery):
     await reset_referrals()
     await call.answer("✅ Barcha foydalanuvchilarning referallari nollab chiqildi!", show_alert=True)
+
+# --- ESLATISH (REMIND) FUNKSIYASI ---
+
+@router.callback_query(F.data == "admin_remind_contest", F.from_user.id == ADMIN_ID)
+async def remind_contest_start(call: CallbackQuery):
+    contest = await get_contest_settings()
+    if not contest["is_active"]:
+        await call.answer("⚠️ Hozirda faol konkurs mavjud emas! Avval yangi konkurs boshlang.", show_alert=True)
+        return
+
+    text = (
+        "🔔 <b>KONKURS HAQIDA ESLATISH</b>\n\n"
+        "Foydalanuvchilarga joriy konkursni qayta eslatmoqchisiz.\n"
+        "Qaysi usulda yuborishni tanlang:"
+    )
+    await call.message.edit_text(text, reply_markup=remind_options_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "cancel_remind", F.from_user.id == ADMIN_ID)
+async def cancel_remind(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text("❌ Eslatish bekor qilindi.")
+
+@router.callback_query(F.data == "remind_original", F.from_user.id == ADMIN_ID)
+async def send_remind_original(call: CallbackQuery, bot: Bot):
+    await call.message.edit_text("⏳ Avvalgi konkurs posti barcha foydalanuvchilarga qayta yuborilmoqda...")
+    await execute_remind_broadcast(bot=bot, admin_message=call.message, extra_prefix="")
+
+@router.callback_query(F.data == "remind_custom", F.from_user.id == ADMIN_ID)
+async def ask_custom_remind_text(call: CallbackQuery, state: FSMContext):
+    await state.set_state(RemindState.waiting_for_custom_text)
+    await call.message.edit_text(
+        "✏️ <b>Qo'shimcha eslatma matnini kiriting:</b>\n\n"
+        "<i>(Masalan: ⚡️ Tezroq ulgurib qoling! Konkurs tugashiga oz vaqt qolmoqda!)</i>",
+        parse_mode="HTML"
+    )
+
+@router.message(RemindState.waiting_for_custom_text, F.from_user.id == ADMIN_ID)
+async def process_custom_remind_text(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    extra_prefix = f"🔔 <b>ESLATMA:</b> {message.text}\n\n"
+    progress_msg = await message.answer("⏳ Eslatish xabari barcha foydalanuvchilarga yuborilmoqda...")
+    await execute_remind_broadcast(bot=bot, admin_message=progress_msg, extra_prefix=extra_prefix)
+
+async def execute_remind_broadcast(bot: Bot, admin_message: Message, extra_prefix: str = ""):
+    contest = await get_contest_settings()
+    if not contest["is_active"]:
+        await admin_message.edit_text("❌ Konkurs aktiv emas.")
+        return
+
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
+
+    top3 = await get_top3_leaderboard()
+    top3_text = "\n"
+    medals = ["🥇", "🥈", "🥉"]
+    if top3:
+        for idx, (name, count) in enumerate(top3):
+            top3_text += f"{medals[idx]} <b>{name}</b> — {count} ta referal\n"
+    else:
+        top3_text += "<i>Hali hech kim referal to'plamadi. Birinchi bo'ling!</i>\n"
+
+    base_post_text = contest.get("post_text") or "🔥 DAXSHAT KONKURS BOSHLANDI!"
+    photo_id = contest.get("photo_id")
+    target = contest["target"]
+    prize = contest["prize"]
+    end_time_str = contest["end_time"] or "Tez orada"
+
+    users = await get_all_user_ids()
+    success = 0
+
+    for u_id in users:
+        final_caption = (
+            f"{extra_prefix}"
+            f"{base_post_text}\n\n"
+            f"🎯 <b>Maqsad:</b> {target} ta do'stni taklif qilish\n"
+            f"💰 <b>Mukofot:</b> {prize:,} so'm\n"
+            f"⏳ <b>Tugash vaqti:</b> {end_time_str}\n\n"
+            f"🏆 <b>Hozirgi TOP-3 Yetakchilar:</b>\n"
+            f"{top3_text}"
+        )
+        reply_kb = get_contest_post_keyboard(bot_username, u_id)
+        try:
+            if photo_id:
+                await bot.send_photo(chat_id=u_id, photo=photo_id, caption=final_caption, reply_markup=reply_kb, parse_mode="HTML")
+            else:
+                await bot.send_message(chat_id=u_id, text=final_caption, reply_markup=reply_kb, parse_mode="HTML")
+            
+            success += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            pass
+
+    await admin_message.edit_text(
+        f"✅ <b>Eslatish xabari yuborildi!</b>\n\n"
+        f"📢 Yetkazildi: <b>{success} ta</b> foydalanuvchiga",
+        parse_mode="HTML"
+    )
+
+# --- KONKURS BOSHLASH VA TO'XTATISH ---
 
 @router.callback_query(F.data == "admin_start_contest", F.from_user.id == ADMIN_ID)
 async def start_contest_flow(call: CallbackQuery, state: FSMContext):
