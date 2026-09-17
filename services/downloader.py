@@ -154,38 +154,46 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
             ['tv']
         ]
 
+        # Format xatoliklarini oldini olish uchun fallback variantlar
+        formats_to_try = [
+            'bestaudio/best',
+            'best',
+            'worstaudio/worst'
+        ]
+
         for client in clients_to_try:
-            ydl_opts = _get_active_opts({
-                'format': 'bestaudio/best',
-                'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': client
+            for fmt in formats_to_try:
+                ydl_opts = _get_active_opts({
+                    'format': fmt,
+                    'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'extractor_args': {
+                        'youtube': {
+                            'player_client': client
+                        }
                     }
-                }
-            })
+                })
 
-            if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
+                if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if info and isinstance(info, dict):
-                        title = info.get('title', 'Audio Track')
-                
-                files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
-                for f in files:
-                    if os.path.exists(f) and os.path.getsize(f) > 0:
-                        return f, title, None
-            except Exception as e:
-                logging.warning(f"Urinish muvaffaqiyatsiz ({client}): {e}")
-                continue
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                        if info and isinstance(info, dict):
+                            title = info.get('title', 'Audio Track')
+                    
+                    files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
+                    for f in files:
+                        if os.path.exists(f) and os.path.getsize(f) > 0:
+                            return f, title, None
+                except Exception as e:
+                    logging.warning(f"Urinish muvaffaqiyatsiz (client: {client}, format: {fmt}): {e}")
+                    continue
 
         return None, title, None
 
