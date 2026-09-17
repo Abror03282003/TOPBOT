@@ -22,7 +22,7 @@ if not os.path.exists(FFMPEG_PATH):
     except Exception as e:
         logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
-DOWNLOAD_DIR = os.path.abspath("/app/data/downloads" if os.path.exists("/app/data") else "downloads")
+DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
@@ -129,6 +129,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
+    # 1. Bazadan keshni tekshirish (mavjud funksiya saqlandi)
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -143,6 +144,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
+        # FFmpeg bo'lsa MP3 ga aylantirish, bo'lmasa eng sifatli audioni o'zini yuklash
         ydl_opts_fast = _get_active_opts({
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
@@ -155,24 +157,39 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
             }
         })
 
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            ydl_opts_fast['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
-                    # Aniq saqlangan fayl yo'lini olish
-                    expected_filename = ydl.prepare_filename(info)
-                    if os.path.exists(expected_filename) and os.path.getsize(expected_filename) > 0:
-                        return expected_filename, title, None
         except Exception as e:
             logging.error(f"Yuklashda xatolik: {e}")
 
-        # Prefiks bo'yicha tayyor faylni qidirish
+        # 1. MP3 fayli mavjudligini tekshirish
+        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+        if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
+            return expected_mp3, title, None
+
+        # 2. Boshqa har qanday yuklangan formatni (m4a, webm, opp) izlash
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
+
+        # 3. Zaxira: Oxirgi o'zgartirilgan faylni topish
+        all_files = [os.path.join(DOWNLOAD_DIR, f) for f in os.listdir(DOWNLOAD_DIR) if not f.endswith('.part') and not f.endswith('.ytdl')]
+        if all_files:
+            latest_file = max(all_files, key=os.path.getmtime)
+            if os.path.exists(latest_file) and os.path.getsize(latest_file) > 0:
+                return latest_file, title, None
 
         return None, title, None
 
