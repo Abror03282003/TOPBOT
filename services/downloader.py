@@ -14,9 +14,14 @@ if not os.path.exists(FFMPEG_PATH):
     try:
         import imageio_ffmpeg
         FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-        FFPROBE_PATH = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
-    except Exception:
-        pass
+        ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+        possible_ffprobe = os.path.join(ffmpeg_dir, "ffprobe")
+        if os.path.exists(possible_ffprobe):
+            FFPROBE_PATH = possible_ffprobe
+        else:
+            FFPROBE_PATH = FFMPEG_PATH
+    except Exception as e:
+        logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -68,7 +73,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web', 'tvhtml5']
+                'player_client': ['android', 'ios', 'mweb', 'web']
             }
         }
     })
@@ -129,14 +134,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
     def _download():
         title = "Audio Track"
 
-        # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash (Moxim format moslashuvchanligi bilan)
+        # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash
         ydl_opts_mp3 = _get_active_opts({
-            'format': 'bestaudio/ba/best/b',
+            'format': 'bestaudio/best',  # Format qidirish moslashuvchanlashtirildi
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'web']
+                    'player_client': ['android', 'ios', 'mweb', 'web']
                 }
             },
             'postprocessors': [{
@@ -163,11 +168,11 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
         # 2-Bosqich: Original ko'rinishida yuklash (Konvertatsiyasiz: har qanday audio format)
         ydl_opts_raw = _get_active_opts({
-            'format': 'ba*/b*/bestaudio/best',
+            'format': 'bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tvhtml5', 'android', 'web']
+                    'player_client': ['android', 'ios', 'mweb', 'web']
                 }
             }
         })
@@ -200,10 +205,12 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
 async def download_media(url: str) -> dict:
     """Video yuklab olish (YouTube/Instagram)"""
+    # Cheklovlar olib tashlandi: har qanday mavjud formatdagi eng yaxshi MP4/Video olinadi
     ydl_opts = _get_active_opts({
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo+bestaudio/best',
         'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
         'max_filesize': 50 * 1024 * 1024,
+        'merge_output_format': 'mp4',
     })
 
     def _download():
@@ -212,6 +219,12 @@ async def download_media(url: str) -> dict:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     filename = ydl.prepare_filename(info)
+                    
+                    # Agar birikishdan keyin mp4 bo'lgan bo'lsa
+                    base, _ = os.path.splitext(filename)
+                    if os.path.exists(f"{base}.mp4"):
+                        filename = f"{base}.mp4"
+
                     return {
                         "file_path": filename,
                         "title": info.get("title", "Video"),
