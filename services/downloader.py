@@ -3,10 +3,10 @@ import glob
 import shutil
 import asyncio
 import logging
-import urllib.parse
 import yt_dlp
+from database import get_cached_file, save_to_cache
 
-# FFmpeg va FFprobe tizim yo'llarini to'g'ri aniqlash
+# FFmpeg va FFprobe yo'llarini aniqlash
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -23,7 +23,7 @@ if not os.path.exists(FFMPEG_PATH):
     except Exception as e:
         logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
-DOWNLOAD_DIR = "downloads"
+DOWNLOAD_DIR = "/app/data/downloads" if os.path.exists("/app/data") else "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
@@ -40,7 +40,7 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
 
 
 def _ensure_cookies_file():
-    """Railway muhitidagi YOUTUBE_COOKIES o'zgaruvchisidan cookies.txt faylini yaratish."""
+    """Railway environment variables orqali cookies.txt yaratish."""
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         try:
@@ -67,19 +67,20 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    """YouTube va SoundCloud orqali 30 tagacha qo'shiqni qidiradi."""
+    """YouTube va SoundCloud orqali 30 tagacha qo'shiqni tezkor qidiradi."""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'web']
+                'player_client': ['mweb', 'android', 'tv'],
+                'skip': ['hls', 'dash']
             }
         }
     })
 
     def _search():
-        # 1-urinish: YouTube bo'yicha
+        # 1-urinish: YouTube bo'yicha tezkor qidiruv
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -98,7 +99,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
-        # 2-urinish: SoundCloud bo'yicha
+        # 2-urinish: SoundCloud
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -122,8 +123,18 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     return await asyncio.to_thread(_search)
 
 
-async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
-    """YouTube ID yoki SoundCloud URL orqali audio yuklab olish."""
+async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
+    """
+    YouTube ID yoki URL orqali audioni yuklab olish.
+    Qaytaradi: (fayl_yo'li_yoki_None, sarlavha, cached_file_id_yoki_None)
+    """
+    youtube_id = str(video_id_or_url)
+    
+    # 0-Bosqich: Baza (Kesh)ni tekshiramiz (0.5s)
+    cached_file_id = await get_cached_file(youtube_id)
+    if cached_file_id:
+        return None, "Audio Track", cached_file_id
+
     if str(video_id_or_url).startswith("http"):
         url = video_id_or_url
         file_prefix = "sc_" + str(hash(video_id_or_url))[-6:]
@@ -134,71 +145,42 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
     def _download():
         title = "Audio Track"
 
-        # 1-Bosqich: MP3 ga konvertatsiya qilib yuklash
-        ydl_opts_mp3 = _get_active_opts({
-            'format': 'bestaudio/best',
+        # Ultra-tezkor yuklash sozlamasi (Re-encoding/konvertatsiyasiz)
+        ydl_opts_fast = _get_active_opts({
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'web']
-                }
-            },
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }],
-        })
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_mp3) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info and isinstance(info, dict):
-                    title = info.get('title', 'Audio Track')
-        except Exception as e:
-            logging.error(f"1-bosqich (MP3) yuklash xatosi: {e}")
-
-        # Tekshiramiz: fayl saqlandimi?
-        pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-        files = glob.glob(pattern)
-        for f in files:
-            if os.path.getsize(f) > 0:
-                return f, title
-
-        # 2-Bosqich: Original ko'rinishida yuklash (Konvertatsiyasiz: har qanday audio format)
-        ydl_opts_raw = _get_active_opts({
-            'format': 'bestaudio/best',
-            'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'web']
+                    'player_client': ['mweb', 'android', 'tv'],
+                    'skip': ['hls', 'dash']
                 }
             }
         })
 
         try:
-            with yt_dlp.YoutubeDL(ydl_opts_raw) as ydl:
+            with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
         except Exception as e:
-            logging.error(f"2-bosqich (Raw Audio) yuklash xatosi: {e}")
+            logging.error(f"Yuklashda xatolik: {e}")
 
-        # Qayta tekshirish
+        # Tayyor faylni qidirish
+        pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = glob.glob(pattern)
         for f in files:
             if os.path.getsize(f) > 0:
-                return f, title
+                return f, title, None
 
-        # 3-Bosqich: Oxirgi chora - Papkadagi har qanday so'nggi yuklangan fayl
+        # Zaxira opsiyasi
         all_files = glob.glob(os.path.join(DOWNLOAD_DIR, "*"))
         if all_files:
             latest_file = max(all_files, key=os.path.getmtime)
             if os.path.getsize(latest_file) > 0:
-                return latest_file, title
+                return latest_file, title, None
 
-        return None, title
+        return None, title, None
 
     return await asyncio.to_thread(_download)
 
@@ -219,7 +201,6 @@ async def download_media(url: str) -> dict:
                 if info and isinstance(info, dict):
                     filename = ydl.prepare_filename(info)
                     
-                    # Agar birikishdan keyin mp4 bo'lgan bo'lsa
                     base, _ = os.path.splitext(filename)
                     if os.path.exists(f"{base}.mp4"):
                         filename = f"{base}.mp4"
