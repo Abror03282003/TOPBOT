@@ -17,17 +17,20 @@ BOT_USERNAME = "top_botuz_bot"
 SEARCH_CACHE = {}
 
 
-def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
-    """Qo'shiq yuklangandan keyin chiqariladigan tugmalar (64 baytlik limit xavfsizligi bilan)."""
-    # callback_data 64 baytdan oshib ketmasligi uchun nomini qisqartiramiz
-    safe_name = song_name[:20]
-    encoded_name = urllib.parse.quote(safe_name)
+def build_song_keyboard(search_id: str = None, index: int = None) -> InlineKeyboardMarkup:
+    """
+    Qo'shiq yuklangandan keyin chiqariladigan tugmalar.
+    64 baytlik limit buzilmasligi uchun 'search_id' va 'index' ishlatiladi.
+    """
+    keyboard = []
     
-    keyboard = [
-        [
-            # 'lyr_' o'rniga qisqa 'l:' ishlatamiz
-            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"l:{encoded_name}")
-        ],
+    # Agar search_id va index mavjud bo'lsa, Lyrics tugmasini xavfsiz ID formatida qo'shamiz
+    if search_id is not None and index is not None:
+        keyboard.append([
+            InlineKeyboardButton(text="📜 Musiqa matni (Lyrics)", callback_data=f"l:{search_id}:{index}")
+        ])
+    
+    keyboard.extend([
         [
             InlineKeyboardButton(text="💾 Saqlash", callback_data="save_to_saved_messages")
         ],
@@ -37,7 +40,7 @@ def build_song_keyboard(song_name: str) -> InlineKeyboardMarkup:
                 url=f"https://t.me/{BOT_USERNAME}?startgroup=true"
             )
         ]
-    ]
+    ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
@@ -212,7 +215,6 @@ async def handle_search(message: Message):
 
 @router.message(F.voice | F.video_note | F.audio | F.video)
 async def handle_all_media_types(message: Message):
-    """Voice, video note, audio va video uchun avtomatik Shazam tanish va qidiruv."""
     await add_user(message.from_user.id, message.from_user.full_name, message.from_user.username or "")
     status_msg = await message.answer("🎧 Tashlangan media eshitib ko'rilmoqda...")
     
@@ -309,12 +311,12 @@ async def handle_download_callback(call: CallbackQuery):
         await call.message.answer_audio(
             audio=cached_file_id,
             title=send_title,
-            reply_markup=build_song_keyboard(send_title)
+            reply_markup=build_song_keyboard(search_id, index)
         )
         return
 
     # 2. KESHDA BO'LMASA -> YouTube'dan yuklab oladi
-    await call.answer(f"⏳ Yuklanmoqda...")
+    await call.answer("⏳ Yuklanmoqda...")
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
@@ -328,7 +330,7 @@ async def handle_download_callback(call: CallbackQuery):
             sent_audio = await call.message.answer_audio(
                 audio=audio_file,
                 title=send_title,
-                reply_markup=build_song_keyboard(send_title)
+                reply_markup=build_song_keyboard(search_id, index)
             )
             
             # 3. KESHGA SAQLASH
@@ -348,14 +350,22 @@ async def handle_download_callback(call: CallbackQuery):
         await status_msg.edit_text(f"❌ Audio yuklashda xatolik: {e}")
 
 
-@router.callback_query(F.data.startswith("l:") | F.data.startswith("lyr_"))
+@router.callback_query(F.data.startswith("l:"))
 async def handle_lyrics_callback(call: CallbackQuery):
-    if call.data.startswith("l:"):
-        raw_name = call.data.replace("l:", "")
-    else:
-        raw_name = call.data.replace("lyr_", "")
+    parts = call.data.split(":")
+    if len(parts) < 3:
+        await call.answer("❌ Noto'g'ri so'rov.", show_alert=True)
+        return
 
-    song_name = urllib.parse.unquote(raw_name)
+    search_id = parts[1]
+    index = int(parts[2])
+
+    results = SEARCH_CACHE.get(search_id)
+    if not results or index >= len(results):
+        song_name = "Musiqa"
+    else:
+        song_name = results[index].get("title", "Musiqa")
+
     await call.answer("📜 Matn tayyorlanmoqda...")
     
     query = urllib.parse.quote(f"{song_name} lyrics matni")
