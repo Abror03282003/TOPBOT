@@ -1,10 +1,12 @@
 from aiogram import Router, F, Bot
+from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from database import get_contest_settings, get_leaderboard, get_top3_leaderboard, get_my_referrals_list, aiosqlite, DB_NAME
 
 router = Router()
 
 @router.message(F.text == "🏆 Konkurs va Reyting")
+@router.message(Command("contest"))
 async def show_contest(message: Message):
     contest = await get_contest_settings()
     bot_info = await message.bot.get_me()
@@ -15,7 +17,7 @@ async def show_contest(message: Message):
             row = await cursor.fetchone()
             my_refs = row[0] if row else 0
 
-    if not contest["is_active"]:
+    if not contest or not contest.get("is_active"):
         await message.answer("⚠️ Hozirda faol konkurs mavjud emas. Yangi konkursni kuting!")
         return
 
@@ -42,7 +44,6 @@ async def send_user_ref_link(call: CallbackQuery, bot: Bot):
     bot_info = await bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref_{call.from_user.id}"
     
-    # Do'stlar ro'yxatini ham birgalikda ko'rsatish
     my_refs = await get_my_referrals_list(call.from_user.id, limit=5)
     refs_text = ""
     if my_refs:
@@ -71,7 +72,9 @@ async def show_live_leaderboard(call: CallbackQuery):
     else:
         top_text += "<i>Hali hech kim referal to'plamadi. Birinchi bo'ling!</i>\n"
 
-    top_text += f"\n🎯 Maqsad: <b>{contest['target']} ta</b> | 💰 Mukofot: <b>{contest['prize']:,} so'm</b>"
+    target = contest.get('target', 0) if contest else 0
+    prize = contest.get('prize', 0) if contest else 0
+    top_text += f"\n🎯 Maqsad: <b>{target} ta</b> | 💰 Mukofot: <b>{prize:,} so'm</b>"
 
     await call.answer(show_alert=True, text="📊 Reyting yangilandi!")
     await call.message.answer(top_text, parse_mode="HTML")
