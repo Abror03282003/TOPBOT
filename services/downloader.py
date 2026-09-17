@@ -6,7 +6,6 @@ import logging
 import yt_dlp
 from database import get_cached_file, save_to_cache
 
-# FFmpeg va FFprobe yo'llarini aniqlash
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -23,7 +22,7 @@ if not os.path.exists(FFMPEG_PATH):
     except Exception as e:
         logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
-DOWNLOAD_DIR = "/app/data/downloads" if os.path.exists("/app/data") else "downloads"
+DOWNLOAD_DIR = os.path.abspath("/app/data/downloads" if os.path.exists("/app/data") else "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
@@ -40,7 +39,6 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
 
 
 def _ensure_cookies_file():
-    """Railway environment variables orqali cookies.txt yaratish."""
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
@@ -75,7 +73,6 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    """YouTube va SoundCloud orqali 30 tagacha qo'shiqni tezkor qidiradi."""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
@@ -88,7 +85,6 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     })
 
     def _search():
-        # 1-urinish: YouTube
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -107,7 +103,6 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
-        # 2-urinish: SoundCloud
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -132,7 +127,6 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
-    """YouTube ID yoki URL orqali audioni yuklab olish."""
     youtube_id = str(video_id_or_url)
     
     cached_file_id = await get_cached_file(youtube_id)
@@ -149,10 +143,9 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     def _download():
         title = "Audio Track"
 
-        # Format tanlash yumshatildi (bestaudio/* format har qanday audio oqimini oladi)
         ydl_opts_fast = _get_active_opts({
             'format': 'bestaudio/best',
-            'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'extractor_args': {
                 'youtube': {
@@ -167,25 +160,19 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
                     title = info.get('title', 'Audio Track')
+                    # Aniq saqlangan fayl yo'lini olish
+                    expected_filename = ydl.prepare_filename(info)
+                    if os.path.exists(expected_filename) and os.path.getsize(expected_filename) > 0:
+                        return expected_filename, title, None
         except Exception as e:
             logging.error(f"Yuklashda xatolik: {e}")
 
-        # Tayyor faylni qidirish
+        # Prefiks bo'yicha tayyor faylni qidirish
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
         for f in files:
             if os.path.exists(f) and os.path.getsize(f) > 0:
                 return f, title, None
-
-        # Zaxira fayl qidirish
-        all_files = [
-            f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "*")) 
-            if not f.endswith('.part') and not f.endswith('.ytdl')
-        ]
-        if all_files:
-            latest_file = max(all_files, key=os.path.getmtime)
-            if os.path.exists(latest_file) and os.path.getsize(latest_file) > 0:
-                return latest_file, title, None
 
         return None, title, None
 
@@ -193,10 +180,9 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 
 async def download_media(url: str) -> dict:
-    """Video yuklab olish (YouTube/Instagram)"""
     ydl_opts = _get_active_opts({
         'format': 'bestvideo+bestaudio/best',
-        'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
+        'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
         'max_filesize': 50 * 1024 * 1024,
         'merge_output_format': 'mp4',
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
