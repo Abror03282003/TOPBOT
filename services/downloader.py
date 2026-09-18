@@ -79,7 +79,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_creator', 'android', 'ios', 'mweb']
+                'player_client': ['tv_embedded', 'ios', 'android', 'mweb']
             }
         }
     })
@@ -146,18 +146,19 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         title = "Audio Track"
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
 
+        # Bloklanish ehtimoli eng kam bo'lgan klientlar ketma-ketligi
         clients_to_try = [
-            ['android_creator'],
-            ['android'],
+            ['tv_embedded'],
             ['ios'],
-            ['mweb'],
-            ['web']
+            ['android_vr'],
+            ['android'],
+            ['mweb']
         ]
 
         formats_to_try = [
             'bestaudio/best',
-            'ba/b',
-            'worstaudio/worst'
+            'ba',
+            'b'
         ]
 
         for client in clients_to_try:
@@ -192,8 +193,29 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                         if os.path.exists(f) and os.path.getsize(f) > 0:
                             return f, title, None
                 except Exception as e:
-                    logging.warning(f"Client {client} va format {fmt} uchun yuklash o'xshamadi: {e}")
+                    logging.warning(f"Client {client} va format {fmt} bilan yuklash o'xshamadi: {e}")
                     continue
+
+        # Agar YouTube mutlaqo bloklangan bo'lsa, SoundCloud'dan zaxira sifatida yuklash
+        try:
+            sc_opts = _get_active_opts({
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
+            })
+            if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+                sc_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            with yt_dlp.YoutubeDL(sc_opts) as ydl:
+                info = ydl.extract_info(f"scsearch1:{video_id_or_url}", download=True)
+                files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
+                for f in files:
+                    if os.path.exists(f) and os.path.getsize(f) > 0:
+                        return f, "Audio Track", None
+        except Exception as sc_e:
+            logging.error(f"SoundCloud fallback error: {sc_e}")
 
         return None, title, None
 
@@ -202,9 +224,9 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 async def download_media(url: str) -> dict:
     clients_to_try = [
-        ['android_creator'],
-        ['android'],
+        ['tv_embedded'],
         ['ios'],
+        ['android'],
         ['mweb', 'web']
     ]
 
@@ -240,7 +262,7 @@ async def download_media(url: str) -> dict:
                                 "id": info.get("id")
                             }
             except Exception as e:
-                logging.warning(f"Media yuklashda klient {client} muvaffaqiyatsiz bo'ldi: {e}")
+                logging.warning(f"Media yuklashda client {client} muvaffaqiyatsiz bo'ldi: {e}")
                 continue
 
         return {"file_path": None, "title": "Video", "id": None}
