@@ -79,13 +79,13 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android_music', 'web_creator', 'ios']
+                'player_client': ['android', 'ios', 'web']
             }
         }
     })
 
     def _search():
-        # 1. YouTube orqali qidirish
+        # 1. YouTube
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -104,7 +104,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
-        # 2. SoundCloud zaxira qidiruvi
+        # 2. SoundCloud zaxirasi
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -130,11 +130,13 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str | None, str]:
+    # Ishlayotgan yangi Invidious domenlari
     invidious_instances = [
+        "https://invidious.flokinet.to",
+        "https://invidious.privacydev.net",
+        "https://invidious.drgns.space",
         "https://inv.nadeko.net",
-        "https://invidious.nerdvpn.de",
-        "https://invidious.projectsegfau.lt",
-        "https://yt.artemislena.eu"
+        "https://invidious.nerdvpn.de"
     ]
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
@@ -142,17 +144,20 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
         for instance in invidious_instances:
             try:
                 url = f"{instance}/api/v1/videos/{video_id}"
-                async with session.get(url, timeout=7) as resp:
+                async with session.get(url, timeout=8, headers={"Accept": "application/json"}) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        title = data.get("title", "Audio Track")
+                        try:
+                            data = await resp.json(content_type=None)
+                        except Exception:
+                            continue
                         
+                        title = data.get("title", "Audio Track")
                         adaptive_formats = data.get("adaptiveFormats", [])
                         audio_streams = [f for f in adaptive_formats if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")]
                         
                         if audio_streams:
                             audio_url = audio_streams[0].get("url")
-                            async with session.get(audio_url, timeout=15) as stream_resp:
+                            async with session.get(audio_url, timeout=20) as stream_resp:
                                 if stream_resp.status == 200:
                                     temp_file = os.path.join(DOWNLOAD_DIR, f"temp_{file_prefix}")
                                     with open(temp_file, "wb") as f:
@@ -193,16 +198,15 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
 
         clients_to_try = [
-            ['android_music'],
-            ['web_creator'],
+            ['android'],
             ['ios'],
-            ['android_vr'],
+            ['web'],
             ['mweb']
         ]
 
         formats_to_try = [
-            'ba',
             'bestaudio/best',
+            'ba',
             'b'
         ]
 
@@ -214,7 +218,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                     'extractor_args': {
                         'youtube': {
                             'player_client': client,
-                            'skip': ['webpage', 'configs']
+                            'skip': ['webpage']
                         }
                     }
                 })
@@ -247,7 +251,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     if file_path and os.path.exists(file_path):
         return file_path, track_title, cached_id
 
-    # 2. Invidious zaxirasi
+    # 2. Invidious zaxirasi (Agar YouTube bloklasa)
     if not str(video_id_or_url).startswith("http"):
         logging.info("Invidious zaxira kanali ishga tushirildi...")
         fallback_file, fallback_title = await _download_via_invidious(youtube_id, file_prefix)
@@ -259,10 +263,9 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 async def download_media(url: str) -> dict:
     clients_to_try = [
-        ['android_music'],
-        ['web_creator'],
+        ['android'],
         ['ios'],
-        ['mweb']
+        ['web']
     ]
 
     def _download():
@@ -275,7 +278,7 @@ async def download_media(url: str) -> dict:
                 'extractor_args': {
                     'youtube': {
                         'player_client': client,
-                        'skip': ['webpage', 'configs']
+                        'skip': ['webpage']
                     }
                 }
             })
