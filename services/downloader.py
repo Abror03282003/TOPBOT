@@ -85,6 +85,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     })
 
     def _search():
+        # 1. YouTube orqali qidirish
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -103,6 +104,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
+        # 2. SoundCloud zaxira qidiruvi
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -121,7 +123,6 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                 return results
         except Exception as e:
             logging.error(f"SoundCloud search error: {e}")
-            return []
 
         return []
 
