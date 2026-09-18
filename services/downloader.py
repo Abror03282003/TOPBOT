@@ -66,11 +66,16 @@ CLIENT_ATTEMPTS = [
 
 # Invidious zaxira instанslari — ketma-ket sinaladi, o'lganlari o'tkazib yuboriladi
 INVIDIOUS_INSTANCES = [
-    "https://invidious.jing.rocks",
-    "https://yewtu.be",
-    "https://invidious.nerdvpn.de",
     "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://yt.chocolatemoo53.com",
+    "https://invidious.tiekoetter.com",
+    "https://inv.thepixora.com",
 ]
+
+# Ixtiyoriy: Railway Variables'ga PROXY_URL qo'shsangiz
+# (masalan http://user:pass@host:port), yt-dlp shu proksi orqali ishlaydi.
+PROXY_URL = os.environ.get("PROXY_URL")
 
 
 def _ensure_cookies_file():
@@ -108,6 +113,8 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
         opts['extractor_args'] = {'youtube': {'player_client': list(clients)}}
     else:
         opts.pop('extractor_args', None)
+    if PROXY_URL:
+        opts['proxy'] = PROXY_URL
     return opts
 
 
@@ -208,7 +215,7 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH — asosiy: yt-dlp, zaxira: Cobalt, so'ng Invidious
+# AUDIO YUKLASH — asosiy: yt-dlp, zaxira: Invidious
 # ---------------------------------------------------------------------------
 def _find_downloaded(file_prefix: str) -> str | None:
     expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
@@ -242,12 +249,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     if file_path:
         return file_path, title, None
 
-    # 2. Zaxira: Cobalt API
-    file_path, title = await _download_via_cobalt(url, file_prefix)
-    if file_path:
-        return file_path, title, None
-
-    # 3. Zaxira: Invidious (faqat YouTube video ID uchun)
+    # 2. Zaxira: Invidious (faqat YouTube video ID uchun)
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_invidious(youtube_id, file_prefix)
         if file_path:
@@ -293,39 +295,6 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
     return None, title
 
 
-async def _download_via_cobalt(url: str, file_prefix: str) -> tuple[str | None, str]:
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.mp3")
-    payload = {"url": url, "downloadMode": "audio", "audioFormat": "mp3"}
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.cobalt.tools/",
-                json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status != 200:
-                    logging.warning(f"Cobalt API status: {resp.status}")
-                    return None, "Audio Track"
-                data = await resp.json()
-                audio_link = data.get("url")
-                if not audio_link:
-                    return None, "Audio Track"
-
-                async with session.get(audio_link, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
-                    if file_resp.status == 200:
-                        with open(output_path, "wb") as f:
-                            f.write(await file_resp.read())
-                        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                            logging.info("✅ Cobalt API orqali yuklandi.")
-                            return output_path, "Audio Track"
-    except Exception as e:
-        logging.warning(f"Cobalt API xatosi: {e}")
-
-    return None, "Audio Track"
-
-
 async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str | None, str]:
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.mp3")
 
@@ -365,39 +334,10 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 
 
 # ---------------------------------------------------------------------------
-# VIDEO / MEDIA YUKLASH — asosiy: yt-dlp, zaxira: Cobalt
+# VIDEO / MEDIA YUKLASH — yt-dlp (klient fallback zanjiri bilan)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    result = await asyncio.to_thread(_yt_dlp_download_media, url)
-    if result["file_path"]:
-        return result
-
-    file_id = str(abs(hash(url)))[-8:]
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}_cobalt.mp4")
-    payload = {"url": url, "downloadMode": "auto"}
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.cobalt.tools/",
-                json=payload, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=12)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    media_link = data.get("url")
-                    if media_link:
-                        async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=40)) as file_resp:
-                            if file_resp.status == 200:
-                                with open(output_path, "wb") as f:
-                                    f.write(await file_resp.read())
-                                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                                    return {"file_path": output_path, "title": "Downloaded Media", "id": file_id}
-    except Exception as e:
-        logging.warning(f"Cobalt video xatosi: {e}")
-
-    return {"file_path": None, "title": "Video", "id": None}
+    return await asyncio.to_thread(_yt_dlp_download_media, url)
 
 
 def _yt_dlp_download_media(url: str) -> dict:
