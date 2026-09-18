@@ -38,6 +38,8 @@ COOKIES_PATH = "cookies.txt"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
+PROXY_URL = os.environ.get("PROXY_URL")
+
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -78,8 +80,6 @@ COBALT_INSTANCES = [
     "https://cobalt.qewertyy.dev",
     "https://api.cobalt.tools"
 ]
-
-PROXY_URL = os.environ.get("PROXY_URL")
 
 
 def _ensure_cookies_file():
@@ -189,7 +189,7 @@ async def _search_via_piped(query: str, limit: int) -> list[dict]:
             try:
                 url = f"{instance}/search"
                 params = {"q": query, "filter": "music_songs"}
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                async with session.get(url, params=params, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         items = data.get("items", [])
@@ -217,7 +217,7 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
             try:
                 url = f"{instance}/api/v1/search"
                 params = {"q": query, "type": "video"}
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                async with session.get(url, params=params, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         results = []
@@ -300,7 +300,7 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/streams/{video_id}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(url, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json(content_type=None)
@@ -309,7 +309,7 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
                     if not audio_streams:
                         continue
                     audio_url = audio_streams[0].get("url")
-                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
+                    async with session.get(audio_url, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
                         if stream_resp.status == 200:
                             with open(output_path, "wb") as f:
                                 async for chunk in stream_resp.content.iter_chunked(64 * 1024):
@@ -341,12 +341,12 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
     async with aiohttp.ClientSession(headers=headers) as session:
         for instance in COBALT_INSTANCES:
             try:
-                async with session.post(f"{instance}/", json=payload, timeout=aiohttp.ClientTimeout(total=7)) as resp:
+                async with session.post(f"{instance}/", json=payload, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=7)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         media_link = data.get("url")
                         if media_link:
-                            async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                            async with session.get(media_link, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
                                 if file_resp.status == 200:
                                     with open(output_path, "wb") as f:
                                         async for chunk in file_resp.content.iter_chunked(64 * 1024):
@@ -368,7 +368,7 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
         for instance in INVIDIOUS_INSTANCES:
             try:
                 url = f"{instance}/api/v1/videos/{video_id}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(url, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json(content_type=None)
@@ -381,7 +381,7 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                     if not audio_streams:
                         continue
                     audio_url = audio_streams[0].get("url")
-                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
+                    async with session.get(audio_url, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
                         if stream_resp.status == 200:
                             with open(output_path, "wb") as f:
                                 async for chunk in stream_resp.content.iter_chunked(64 * 1024):
