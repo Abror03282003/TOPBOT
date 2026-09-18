@@ -2,25 +2,34 @@ import os
 import logging
 from shazamio import Shazam
 
-shazam = Shazam()
-
-async def recognize_song(file_path: str) -> dict | None:
+async def recognize_audio(file_path: str) -> dict | None:
     """
-    Har qanday media fayldan (mp3, ogg, mp4) musiqani aniqlab beradi.
+    Shazamio orqali audio/video fayldan qo'shiqni aniqlash.
     """
     if not os.path.exists(file_path):
+        logging.error(f"Shazam uchun fayl topilmadi: {file_path}")
         return None
 
     try:
+        shazam = Shazam()
         out = await shazam.recognize(file_path)
-        track = out.get("track")
-        if track:
-            return {
-                "title": track.get("title", "Noma'lum nom"),
-                "artist": track.get("subtitle", "Noma'lum ijrochi"),
-                "shazam_id": track.get("key"),
-            }
-    except Exception as e:
-        logging.error(f"Shazam orqali aniqlashda xatolik: {e}")
+        
+        if not out or 'track' not in out:
+            return None
 
-    return None
+        track = out['track']
+        title = track.get('title', 'Noma\'lum')
+        subtitle = track.get('subtitle', 'Noma\'lum ijrochi')
+        
+        # Qidiruv uchun kalit so'z
+        query = f"{subtitle} - {title}"
+        
+        return {
+            'title': title,
+            'artist': subtitle,
+            'query': query,
+            'shazam_url': track.get('url', '')
+        }
+    except Exception as e:
+        logging.error(f"Shazam aniqlashda xatolik: {e}")
+        return None
