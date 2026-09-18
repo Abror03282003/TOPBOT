@@ -61,7 +61,7 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
-# Ishlaydigan Invidious va Piped zaxira instanslari
+# Ishlaydigan Invidious zaxira instanslari
 INVIDIOUS_INSTANCES = [
     "https://invidious.flokinet.to",
     "https://invidious.privacydev.net",
@@ -260,13 +260,19 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
     title = "Audio Track"
-    format_chain = 'bestaudio[acodec!=none]/bestaudio/best[acodec!=none]/best/worst'
+    
+    # Har qanday mavjud audio oqimini qabul qilish uchun moslashuvchan formatlar
+    formats_to_try = [
+        'bestaudio/best',
+        'bestaudio[acodec!=none]/best[acodec!=none]',
+        'worst'
+    ]
 
     extra = {
-        'format': format_chain,
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
         'overwrites': True,
     }
+    
     if FFMPEG_PATH:
         extra['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -275,21 +281,23 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         }]
 
     last_error = None
-    for clients, use_cookies in CLIENT_ATTEMPTS:
-        opts = _build_opts(extra, clients, use_cookies)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-            if info and isinstance(info, dict):
-                title = info.get('title', title)
-            found = _find_downloaded(file_prefix)
-            if found:
-                logging.info(f"✅ yt-dlp orqali yuklandi ({clients}, cookies={use_cookies}): {found}")
-                return found, title
-        except Exception as e:
-            last_error = e
-            logging.warning(f"yt-dlp urinish muvaffaqiyatsiz ({clients}, cookies={use_cookies}): {e}")
-            continue
+    for fmt in formats_to_try:
+        extra['format'] = fmt
+        for clients, use_cookies in CLIENT_ATTEMPTS:
+            opts = _build_opts(extra, clients, use_cookies)
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                if info and isinstance(info, dict):
+                    title = info.get('title', title)
+                found = _find_downloaded(file_prefix)
+                if found:
+                    logging.info(f"✅ yt-dlp orqali yuklandi ({clients}, cookies={use_cookies}, format={fmt}): {found}")
+                    return found, title
+            except Exception as e:
+                last_error = e
+                logging.warning(f"yt-dlp urinish muvaffaqiyatsiz ({clients}, format={fmt}): {e}")
+                continue
 
     logging.warning(f"yt-dlp orqali yuklab bo'lmadi. Oxirgi xato: {last_error}")
     return None, title
@@ -338,7 +346,6 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     file_id = str(abs(hash(url)))[-8:]
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_id}.mp4")
 
     # 1. Birinchi Cobalt API orqali sinab ko'rish
     cobalt_res = await _download_via_cobalt(url, file_id, is_audio=False)
@@ -383,7 +390,7 @@ def _yt_dlp_download_media(url: str) -> dict:
 
 
 async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True) -> str | None:
-    """Cobalt API orqali tezkor va bloksiz yuklash yordamchisi"""
+    """Cobalt API v10+ spetsifikatsiyasiga moslang tezkor yuklash yordamchisi"""
     ext = "mp3" if is_audio else "mp4"
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.{ext}")
 
@@ -391,11 +398,12 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
         payload = {
             "url": url,
             "downloadMode": "audio" if is_audio else "auto",
-            "audioFormat": "mp3" if is_audio else None
+            "audioFormat": "mp3"
         }
         headers = {
             "Accept": "application/json",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT
         }
         try:
             async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -403,13 +411,15 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
                     data = await resp.json()
                     media_link = data.get("url")
                     if media_link:
-                        async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=35)) as file_resp:
+                        async with session.get(media_link, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=45)) as file_resp:
                             if file_resp.status == 200:
                                 with open(output_path, "wb") as f:
                                     f.write(await file_resp.read())
                                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                                     logging.info(f"✅ Cobalt API orqali yuklandi: {output_path}")
                                     return output_path
+                else:
+                    logging.warning(f"Cobalt API status kodi: {resp.status}")
         except Exception as e:
             logging.warning(f"Cobalt API xatosi: {e}")
 
