@@ -8,21 +8,26 @@ import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
+# ==========================================
+# FFmpeg / FFprobe yo'llarini sozlash
+# ==========================================
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
-if not os.path.exists(FFMPEG_PATH):
+if not (os.path.exists(FFMPEG_PATH) and os.path.exists(FFPROBE_PATH)):
     try:
         import imageio_ffmpeg
-        FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-        ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
-        possible_ffprobe = os.path.join(ffmpeg_dir, "ffprobe")
-        if os.path.exists(possible_ffprobe):
-            FFPROBE_PATH = possible_ffprobe
-        else:
-            FFPROBE_PATH = FFMPEG_PATH
+        imageio_bin = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(imageio_bin):
+            FFMPEG_PATH = imageio_bin
+            ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+            possible_ffprobe = os.path.join(ffmpeg_dir, "ffprobe")
+            FFPROBE_PATH = possible_ffprobe if os.path.exists(possible_ffprobe) else FFMPEG_PATH
+            
+            # PATH muhitiga qo'shish
+            os.environ["PATH"] += os.pathsep + ffmpeg_dir
     except Exception as e:
-        logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
+        logging.warning(f"imageio_ffmpeg orqali sozlashda ogohlantirish: {e}")
 
 if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     AudioSegment.converter = FFMPEG_PATH
@@ -33,6 +38,7 @@ DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
+# Base yt-dlp opatsiyalari
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -46,18 +52,28 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
 
 
 def _ensure_cookies_file():
+    """YOUTUBE_COOKIES env o'zgaruvchisini cookies.txt ga yozish"""
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
         try:
-            with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-                f.write(cookies_env_cleaned)
-            logging.info("🍪 YouTube cookies muvaffaqiyatli cookies.txt fayliga yozildi.")
+            # Fayl yo'q bo'lsa yoki kontent o'zgargan bo'lsa yozish
+            write_needed = True
+            if os.path.exists(COOKIES_PATH):
+                with open(COOKIES_PATH, "r", encoding="utf-8") as f:
+                    if f.read() == cookies_env_cleaned:
+                        write_needed = False
+            
+            if write_needed:
+                with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+                    f.write(cookies_env_cleaned)
+                logging.info("🍪 YouTube cookies muvaffaqiyatli cookies.txt fayliga yozildi.")
         except Exception as e:
             logging.error(f"Cookies faylini yozishda xatolik: {e}")
 
 
 def _get_active_opts(extra_opts: dict) -> dict:
+    """Faol parametrlar va cookies faylini birlashtirish"""
     _ensure_cookies_file()
     opts = {**BASE_YDL_OPTS, **extra_opts}
     if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
@@ -66,6 +82,7 @@ def _get_active_opts(extra_opts: dict) -> dict:
 
 
 def format_duration(seconds: int) -> str:
+    """Saniyalarni MM:SS formatiga o'tkazish"""
     if not seconds:
         return "0:00"
     minutes = int(seconds) // 60
@@ -74,12 +91,13 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
+    """YouTube va SoundCloud orqali treklarni izlash"""
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web']
+                'player_client': ['android', 'ios', 'mweb', 'web']
             }
         }
     })
@@ -130,7 +148,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str | None, str]:
-    # Ishlayotgan yangi Invidious domenlari
+    """YouTube bloklagan holatda Invidious API orqali zaxira yuklab olish"""
     invidious_instances = [
         "https://invidious.flokinet.to",
         "https://invidious.privacydev.net",
@@ -150,11 +168,14 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                             data = await resp.json(content_type=None)
                         except Exception:
                             continue
-                        
+
                         title = data.get("title", "Audio Track")
                         adaptive_formats = data.get("adaptiveFormats", [])
-                        audio_streams = [f for f in adaptive_formats if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")]
-                        
+                        audio_streams = [
+                            f for f in adaptive_formats 
+                            if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")
+                        ]
+
                         if audio_streams:
                             audio_url = audio_streams[0].get("url")
                             async with session.get(audio_url, timeout=20) as stream_resp:
@@ -162,7 +183,7 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                                     temp_file = os.path.join(DOWNLOAD_DIR, f"temp_{file_prefix}")
                                     with open(temp_file, "wb") as f:
                                         f.write(await stream_resp.read())
-                                    
+
                                     if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
                                         sound = AudioSegment.from_file(temp_file)
                                         sound.export(output_path, format="mp3", bitrate="192k")
@@ -180,8 +201,9 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
+    """ID yoki URL bo'yicha audioni yuklab olish va keshlash"""
     youtube_id = str(video_id_or_url)
-    
+
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -200,8 +222,8 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         clients_to_try = [
             ['android'],
             ['ios'],
-            ['web'],
-            ['mweb']
+            ['mweb'],
+            ['web']
         ]
 
         formats_to_try = [
@@ -235,7 +257,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                         info = ydl.extract_info(url, download=True)
                         if info and isinstance(info, dict):
                             title = info.get('title', 'Audio Track')
-                    
+
                     files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
                     for f in files:
                         if os.path.exists(f) and os.path.getsize(f) > 0:
@@ -246,12 +268,12 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
         return None, title, None
 
-    # 1. yt-dlp orqali urinish
+    # 1. yt-dlp orqali yuklab olish
     file_path, track_title, cached_id = await asyncio.to_thread(_download)
     if file_path and os.path.exists(file_path):
         return file_path, track_title, cached_id
 
-    # 2. Invidious zaxirasi (Agar YouTube bloklasa)
+    # 2. Invidious zaxirasi (YouTube bloklagan bo'lsa)
     if not str(video_id_or_url).startswith("http"):
         logging.info("Invidious zaxira kanali ishga tushirildi...")
         fallback_file, fallback_title = await _download_via_invidious(youtube_id, file_prefix)
@@ -262,9 +284,11 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 
 async def download_media(url: str) -> dict:
+    """Videoni MP4 formatida yuklab olish"""
     clients_to_try = [
         ['android'],
         ['ios'],
+        ['mweb'],
         ['web']
     ]
 
@@ -273,7 +297,7 @@ async def download_media(url: str) -> dict:
             ydl_opts = _get_active_opts({
                 'format': 'bestvideo+bestaudio/best',
                 'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-                'max_filesize': 50 * 1024 * 1024,
+                'max_filesize': 50 * 1024 * 1024,  # Telegram limitiga moslab (50MB)
                 'merge_output_format': 'mp4',
                 'extractor_args': {
                     'youtube': {
