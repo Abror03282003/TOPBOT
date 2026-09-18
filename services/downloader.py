@@ -61,7 +61,7 @@ def _ensure_cookies_file():
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if not cookies_env:
         return
-    cleaned = cookies_env.replace("\\n", "\n").strip()
+    cleaned = cookies_env.replace("\\n", "\n").replace("\r\n", "\n").strip()
     try:
         with open(COOKIES_PATH, "w", encoding="utf-8") as f:
             f.write(cleaned + "\n")
@@ -183,21 +183,21 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. Direct yt-dlp (Ishonchli video formatidan ajratib olish)
-    file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
-    if file_path:
-        return file_path, title, None
+    # 1. Cobalt API (Blokirovka va Cookies siz eng tez yuklovchi servis)
+    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
+    if cobalt_file:
+        return cobalt_file, "Audio Track", None
 
-    # 2. Invidious Direct Audio Stream
+    # 2. Invidious API
     if not youtube_id.startswith("http"):
         inv_file, title = await _download_via_invidious(youtube_id, file_prefix)
         if inv_file:
             return inv_file, title, None
 
-    # 3. Cobalt API
-    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
+    # 3. Direct yt-dlp (iOS & Mweb klientlari orqali)
+    file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
+    if file_path:
+        return file_path, title, None
 
     return None, "Audio Track", None
 
@@ -272,9 +272,8 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
     _ensure_cookies_file()
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.%(ext)s")
     
-    # Video uchun 100% ishlayotgan format va player_client sozlamalari
     opts = {
-        'format': 'bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestaudio/best',
         'outtmpl': outtmpl,
         'overwrites': True,
         'quiet': True,
@@ -282,7 +281,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded', 'android_vr', 'web'],
+                'player_client': ['ios', 'mweb', 'android'],
             }
         }
     }
@@ -302,7 +301,6 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                     mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
                     
-                    # FFmpeg orqali MP3 formatiga o'tkazamiz
                     if FFMPEG_PATH:
                         try:
                             sound = AudioSegment.from_file(f)
@@ -343,7 +341,7 @@ def _yt_dlp_download_video(url: str) -> dict:
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded', 'android_vr', 'web'],
+                'player_client': ['ios', 'mweb', 'android'],
             }
         }
     }
