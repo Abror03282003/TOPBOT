@@ -38,7 +38,6 @@ COOKIES_PATH = "cookies.txt"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-# YouTube blokirovkasini kamaytirish uchun optimallashtirilgan parametrlar
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -56,7 +55,6 @@ BASE_YDL_OPTS = {
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
-# Mijozlar (Clients) ro'yxati va ularga poyga berasiz
 CLIENT_ATTEMPTS = [
     (['tv', 'tv_embedded'], True),
     (['android', 'mweb'], True),
@@ -66,7 +64,6 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
-# Public instansiyalar
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
@@ -86,7 +83,6 @@ COBALT_INSTANCES = [
     "https://api.cobalt.tools"
 ]
 
-
 # ---------------------------------------------------------------------------
 # Cookies va YDL Sozlamalar Boshqaruvi
 # ---------------------------------------------------------------------------
@@ -95,7 +91,6 @@ def _ensure_cookies_file():
     if not cookies_env:
         return
     
-    # Environment variable'dagi escape qilingan \n larni haqiqiy yangi qatorga o'tkazish
     cleaned = cookies_env.replace("\\n", "\n").strip()
     
     if os.path.exists(COOKIES_PATH):
@@ -130,7 +125,6 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
     if clients:
         extractor_args['player_client'] = list(clients)
 
-    # PO Token agar Railway o'zgaruvchilarida mavjud bo'lsa
     po_token = os.environ.get("YOUTUBE_PO_TOKEN")
     visitor_data = os.environ.get("YOUTUBE_VISITOR_DATA")
     if po_token:
@@ -154,29 +148,24 @@ def format_duration(seconds) -> str:
     secs = int(seconds) % 60
     return f"{minutes}:{secs:02d}"
 
-
 # ---------------------------------------------------------------------------
-# QIDIRUV
+# QIDIRUV (O'zgartirilmadi)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     search_query = query.strip()
 
-    # 1. Piped API orqali qidiruv (Musika bo'limi)
     results = await _search_via_piped(search_query, limit, filter_type="music_songs")
     if results:
         return results
 
-    # 2. Piped API orqali umumiy video qidiruvi
     results = await _search_via_piped(search_query, limit, filter_type="all")
     if results:
         return results
 
-    # 3. Invidious orqali qidiruv
     results = await _search_via_invidious(search_query, limit)
     if results:
         return results
 
-    # 4. yt-dlp zaxira
     def _yt_dlp_search():
         base = {
             'extract_flat': True,
@@ -260,19 +249,15 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
                 continue
     return []
 
-
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH
+# AUDIO YUKLASH (YANGILANDI VA TUZATILDI)
 # ---------------------------------------------------------------------------
 def _find_downloaded(file_prefix: str) -> str | None:
-    expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
-    if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 0:
-        return expected_mp3
-    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
+    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}*")
     for f in glob.glob(pattern):
         if f.endswith(('.part', '.ytdl')):
             continue
-        if os.path.exists(f) and os.path.getsize(f) > 0:
+        if os.path.exists(f) and os.path.getsize(f) > 10240: # Kamida 10KB
             return f
     return None
 
@@ -292,7 +277,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 2. Piped API orqali yuklash
+    # 2. Piped API
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_piped(youtube_id, file_prefix)
         if file_path:
@@ -318,7 +303,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 
 async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | None, str]:
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_piped.mp3")
     headers = {"User-Agent": USER_AGENT}
 
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -333,14 +317,22 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
                     audio_streams = data.get("audioStreams", [])
                     if not audio_streams:
                         continue
-                    audio_url = audio_streams[0].get("url")
-                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
+                    
+                    stream = audio_streams[0]
+                    audio_url = stream.get("url")
+                    mime = stream.get("mimeType", "")
+                    
+                    # Asl audio formatiga qarab kengaytma beramiz
+                    ext = "m4a" if "mp4" in mime or "m4a" in mime else "webm"
+                    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_piped.{ext}")
+
+                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=30)) as stream_resp:
                         if stream_resp.status == 200:
                             with open(output_path, "wb") as f:
                                 async for chunk in stream_resp.content.iter_chunked(64 * 1024):
                                     f.write(chunk)
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                                logging.info("✅ Piped API orqali yuklandi.")
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
+                                logging.info(f"✅ Piped API orqali yuklandi: {output_path}")
                                 return output_path, title
             except Exception:
                 continue
@@ -349,13 +341,12 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
 
 
 async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True) -> str | None:
-    ext = "mp3" if is_audio else "mp4"
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.{ext}")
+    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.m4a")
 
     payload = {
         "url": url,
-        "downloadMode": "audio" if is_audio else "auto",
-        "audioFormat": "mp3"
+        "downloadMode": "audio",
+        "audioFormat": "best"
     }
     headers = {
         "Accept": "application/json",
@@ -376,7 +367,7 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
                                     with open(output_path, "wb") as f:
                                         async for chunk in file_resp.content.iter_chunked(64 * 1024):
                                             f.write(chunk)
-                                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                                    if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
                                         logging.info(f"✅ Cobalt API ({instance}) orqali yuklandi.")
                                         return output_path
             except Exception:
@@ -386,7 +377,6 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
 
 
 async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str | None, str]:
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.mp3")
     headers = {"User-Agent": USER_AGENT}
 
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -401,18 +391,23 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                     adaptive_formats = data.get("adaptiveFormats", [])
                     audio_streams = [
                         f for f in adaptive_formats
-                        if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")
+                        if "audio" in f.get("type", "") or f.get("container") in ["m4a", "webm", "mp3"]
                     ]
                     if not audio_streams:
                         continue
-                    audio_url = audio_streams[0].get("url")
+                    
+                    stream = audio_streams[0]
+                    audio_url = stream.get("url")
+                    container = stream.get("container", "m4a")
+                    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.{container}")
+
                     async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
                         if stream_resp.status == 200:
                             with open(output_path, "wb") as f:
                                 async for chunk in stream_resp.content.iter_chunked(64 * 1024):
                                     f.write(chunk)
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                                logging.info("✅ Invidious orqali yuklandi.")
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
+                                logging.info(f"✅ Invidious orqali yuklandi: {output_path}")
                                 return output_path, title
             except Exception:
                 continue
@@ -422,41 +417,36 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
     title = "Audio Track"
-    formats_to_try = ['bestaudio/best', 'ba/b', 'worst']
-
+    
+    # Audio sifatini buzmasdan to'g'ridan-to'g'ri asl formatida (m4a, webm) yuklab olamiz
     extra = {
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
         'overwrites': True,
     }
 
     if FFMPEG_PATH:
-        extra['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
+        extra['ffmpeg_location'] = FFMPEG_PATH
 
-    for fmt in formats_to_try:
-        extra['format'] = fmt
-        for clients, use_cookies in CLIENT_ATTEMPTS:
-            opts = _build_opts(extra, clients, use_cookies)
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    if info and isinstance(info, dict):
-                        title = info.get('title', title)
-                found = _find_downloaded(file_prefix)
-                if found:
-                    logging.info(f"✅ yt-dlp orqali yuklandi ({clients}): {found}")
-                    return found, title
-            except Exception:
-                continue
+    for clients, use_cookies in CLIENT_ATTEMPTS:
+        opts = _build_opts(extra, clients, use_cookies)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info and isinstance(info, dict):
+                    title = info.get('title', title)
+            found = _find_downloaded(file_prefix)
+            if found:
+                logging.info(f"✅ yt-dlp audio yuklandi ({clients}): {found}")
+                return found, title
+        except Exception as e:
+            logging.warning(f"yt-dlp audio error ({clients}): {e}")
+            continue
 
     return None, title
 
-
 # ---------------------------------------------------------------------------
-# MEDIA YUKLASH
+# MEDIA YUKLASH (Video funksiyalaringiz o'zgarmasdan saqlandi)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     file_prefix = "media_" + str(abs(hash(url)))[-6:]
