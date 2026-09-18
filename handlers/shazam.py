@@ -1,77 +1,76 @@
 import os
 import logging
-from aiogram import Router, F, types, Bot
-from services.shazam import recognize_song
+from aiogram import Router, F, Bot
+from aiogram.types import Message
+from services.shazam import recognize_audio
 from services.downloader import search_tracks, download_audio_by_id
+from database import save_to_cache
 
 router = Router()
 
-@router.message(F.voice | F.video_note | F.audio | F.video)
-async def handle_shazam_media(message: types.Message, bot: Bot):
-    msg = await message.answer("🔍 Media tahlil qilinmoqda, musiqa qidirilmoqda...")
+DOWNLOAD_DIR = os.path.abspath("downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+@router.message(F.voice | F.audio | F.video)
+async def handle_shazam_media(message: Message, bot: Bot):
+    status_msg = await message.answer("🔍 Qo'shiq eshitilmoqda va qidirilmoqda...")
     
-    # Media turini aniqlash
+    file_id = None
     if message.voice:
         file_id = message.voice.file_id
-        ext = "ogg"
-    elif message.video_note:
-        file_id = message.video_note.file_id
-        ext = "mp4"
     elif message.audio:
         file_id = message.audio.file_id
-        ext = "mp3"
     elif message.video:
         file_id = message.video.file_id
-        ext = "mp4"
-    else:
-        await msg.edit_text("❌ Qo'llab-quvvatlanmaydigan fayl.")
+
+    if not file_id:
+        await status_msg.edit_text("❌ Faylni yuklab bo'lmadi.")
         return
 
-    file_path = f"downloads/shazam_{file_id}.{ext}"
-
+    local_path = os.path.join(DOWNLOAD_DIR, f"shazam_{message.from_user.id}_{message.message_id}.ogg")
+    
     try:
+        # Faylni Telegram serveridan yuklab olish
         file_info = await bot.get_file(file_id)
-        await bot.download_file(file_info.file_path, file_path)
+        await bot.download_file(file_info.file_path, destination=local_path)
 
-        # services/shazam.py orqali aniqlash
-        song_info = await recognize_song(file_path)
-    except Exception as e:
-        logging.error(f"Shazam yuklash/aniqlash xatosi: {e}")
-        song_info = None
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        # Shazam orqali tanib olish
+        track_info = await recognize_audio(local_path)
+        
+        if not track_info:
+            await status_msg.edit_text("😔 Afsuski, bu qo'shiqni aniqlay olmadim.")
+            return
 
-    if not song_info:
-        await msg.edit_text("❌ Afsuski, ushbu mediadan musiqa topilmadi.")
-        return
+        await status_msg.edit_text(f"🎵 Topildi: **{track_info['artist']} - {track_info['title']}**\n\nYuklanmoqda...")
 
-    # Ba'zan shazam service dict o'rniga string yoki tuple qaytarishi mumkin, shuni tekshirish:
-    if isinstance(song_info, dict):
-        query = f"{song_info.get('artist', '')} - {song_info.get('title', '')}".strip(" -")
-    else:
-        query = str(song_info)
+        # Topilgan nom bo'yicha YouTube'dan qidirish
+        search_results = await search_tracks(track_info['query'], limit=1)
+        
+        if not search_results:
+            await status_msg.edit_text(f"🎵 Topildi: **{track_info['query']}**\n\nLekin yuklab olish uchun audio fayli topilmadi.")
+            return
 
-    await msg.edit_text(f"🎧 Topildi: **{query}**\n\n⬇️ Qo'shiq yuklanmoqda...")
+        video_id = search_results[0]['id']
+        file_path, title, cached_file_id = await download_audio_by_id(video_id)
 
-    # Izlash va yuklab berish
-    tracks = await search_tracks(query, limit=1)
-    if tracks:
-        res = await download_audio_by_id(tracks[0]['id'])
-        file_path = res[0] if isinstance(res, tuple) else res
-        cached_id = res[2] if isinstance(res, tuple) and len(res) > 2 else None
-
-        if cached_id:
-            await message.answer_audio(cached_id, caption=f"🎵 {query}")
-            await msg.delete()
+        if cached_file_id:
+            await message.answer_audio(audio=cached_file_id, caption=f"🎵 {title}\n\n🤖 @top_botuz_bot")
+            await status_msg.delete()
         elif file_path and os.path.exists(file_path):
-            await message.answer_audio(
-                audio=types.FSInputFile(file_path),
-                caption=f"🎵 {query}"
+            sent_audio = await message.answer_audio(
+                audio=FSInputFile(file_path),
+                caption=f"🎵 {title}\n\n🤖 @top_botuz_bot"
             )
-            await msg.delete()
-            os.remove(file_path)
+            await save_to_cache(video_id, sent_audio.audio.file_id)
+            await status_msg.delete()
+            if os.path.exists(file_path):
+                os.remove(file_path)
         else:
-            await msg.edit_text(f"🎵 Topildi: **{query}**\n❌ Qo'shiqni yuklab bo'lmadi.")
-    else:
-        await msg.edit_text(f"🎵 Topildi: **{query}**\n❌ Manba topilmadi.")
+            await status_msg.edit_text("❌ Qo'shiqni yuklab bo'lmadi.")
+
+    except Exception as e:
+        logging.error(f"Shazam handler xatosi: {e}")
+        await status_msg.edit_text("❌ Xatolik yuz berdi.")
+    finally:
+        if os.path.exists(local_path):
+            os.remove(local_path)
