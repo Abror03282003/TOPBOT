@@ -183,18 +183,18 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. Cobalt API (Blokirovka va Cookies siz eng tez yuklovchi servis)
-    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
-
-    # 2. Invidious API
+    # 1. Invidious Direct Stream (YouTube blokirovkasidan xoli eng tez yo'l)
     if not youtube_id.startswith("http"):
         inv_file, title = await _download_via_invidious(youtube_id, file_prefix)
         if inv_file:
             return inv_file, title, None
 
-    # 3. Direct yt-dlp (iOS & Mweb klientlari orqali)
+    # 2. Cobalt API Zaxirasi
+    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
+    if cobalt_file:
+        return cobalt_file, "Audio Track", None
+
+    # 3. Direct yt-dlp (Oxirgi chorak sifatida iOS klient bilan)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
@@ -227,8 +227,18 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                             with open(output_path, "wb") as f:
                                 async for chunk in s_resp.content.iter_chunked(64 * 1024):
                                     f.write(chunk)
+                            
                             if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                                logging.info("✅ Invidious stream orqali yuklandi.")
+                                mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+                                if FFMPEG_PATH:
+                                    try:
+                                        sound = AudioSegment.from_file(output_path)
+                                        sound.export(mp3_path, format="mp3", bitrate="192k")
+                                        os.remove(output_path)
+                                        logging.info(f"✅ Invidious orqali MP3 ga o'tkazildi: {mp3_path}")
+                                        return mp3_path, title
+                                    except Exception:
+                                        return output_path, title
                                 return output_path, title
             except Exception:
                 continue
@@ -281,7 +291,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'android'],
+                'player_client': ['ios', 'android'],
             }
         }
     }
@@ -300,7 +310,6 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
             for f in downloaded_files:
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                     mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
-                    
                     if FFMPEG_PATH:
                         try:
                             sound = AudioSegment.from_file(f)
@@ -309,11 +318,9 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
                                 os.remove(f)
                             logging.info(f"✅ Audio yuklandi va MP3ga o'tkazildi: {mp3_path}")
                             return mp3_path, title
-                        except Exception as conv_err:
-                            logging.error(f"FFmpeg konvertatsiya xatosi: {conv_err}")
+                        except Exception:
                             return f, title
                     else:
-                        logging.info(f"✅ Audio yuklandi: {f}")
                         return f, title
     except Exception as e:
         logging.error(f"yt-dlp audio xatoligi: {e}")
@@ -341,7 +348,7 @@ def _yt_dlp_download_video(url: str) -> dict:
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'mweb', 'android'],
+                'player_client': ['ios', 'android'],
             }
         }
     }
