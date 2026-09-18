@@ -33,7 +33,7 @@ except Exception:
 # 3. Qolgan kutubxona va modullarni import qilish
 from aiogram import Bot, Dispatcher
 from database import init_db
-from handlers import start, download, admin, referral
+from handlers import start, download, admin, referral, shazam  # <-- shazam qo'shildi
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -59,6 +59,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(referral.router)
+    dp.include_router(shazam.router)   # <-- Shazam routeri ulindi
     dp.include_router(download.router)
 
     logging.info("Bot muvaffaqiyatli ishga tushdi!")
