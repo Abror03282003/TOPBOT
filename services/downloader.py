@@ -44,19 +44,19 @@ BASE_YDL_OPTS = {
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'geo_bypass': True,
-    'retries': 3,
+    'retries': 5,
     'socket_timeout': 30,
 }
 
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
+# Bot-guard bloklarini chetlab o'tish uchun kengaytirilgan mijozlar ro'yxati
 CLIENT_ATTEMPTS = [
-    (['web_safari'], True),
-    (['web'], True),
-    (['android', 'ios'], False),
+    (['tv', 'tv_embedded'], True),
+    (['android_vr', 'web_creator'], True),
+    (['ios', 'android'], False),
     (['mweb'], False),
-    (['tv'], False),
     (None, False),
 ]
 
@@ -102,10 +102,16 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
         opts['cookiefile'] = COOKIES_PATH
     else:
         opts.pop('cookiefile', None)
+        
+    extractor_args = {}
     if clients:
-        opts['extractor_args'] = {'youtube': {'player_client': list(clients)}}
+        extractor_args['player_client'] = list(clients)
+    
+    if extractor_args:
+        opts['extractor_args'] = {'youtube': extractor_args}
     else:
         opts.pop('extractor_args', None)
+
     if PROXY_URL:
         opts['proxy'] = PROXY_URL
     return opts
@@ -120,7 +126,7 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV — Foydalanuvchi yozgan sof matn bo'yicha global qidiruv
+# QIDIRUV
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     search_query = query.strip()
@@ -242,21 +248,21 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. yt-dlp (Asosiy va barqaror yuklovchi)
+    # 1. yt-dlp (Asosiy)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 2. Invidious (Zaxira)
+    # 2. Cobalt API (YT-DLP block bo'lganda birinchi API zaxirasi)
+    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
+    if cobalt_file:
+        return cobalt_file, "Audio Track", None
+
+    # 3. Invidious (So'nggi zaxira)
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_invidious(youtube_id, file_prefix)
         if file_path:
             return file_path, title, None
-
-    # 3. Cobalt API (Qo'shimcha zaxira)
-    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
 
     return None, "Audio Track", None
 
@@ -266,7 +272,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
     
     formats_to_try = [
         'bestaudio/best',
-        'bestaudio[acodec!=none]/best[acodec!=none]',
+        'ba/b',
         'worst'
     ]
 
@@ -347,13 +353,12 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 # MEDIA YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    file_id = str(abs(hash(url)))[-8:]
     return await asyncio.to_thread(_yt_dlp_download_media, url)
 
 
 def _yt_dlp_download_media(url: str) -> dict:
     extra = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
         'max_filesize': 50 * 1024 * 1024,
         'overwrites': True,
@@ -400,7 +405,7 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
             "User-Agent": USER_AGENT
         }
         try:
-            async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=12)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     media_link = data.get("url")
