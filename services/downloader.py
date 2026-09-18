@@ -3,6 +3,8 @@ import glob
 import shutil
 import asyncio
 import logging
+import urllib.parse
+import aiohttp
 import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
@@ -39,6 +41,7 @@ BASE_YDL_OPTS = {
     'nocheckcertificate': True,
     'ignoreerrors': True,
     'geo_bypass': True,
+    'cachedir': False,
 }
 
 if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
@@ -74,17 +77,17 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    search_opts = _get_active_opts({
-        'extract_flat': True,
-        'skip_download': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'ios', 'android', 'mweb']
-            }
-        }
-    })
-
     def _search():
+        # 1. YouTube orqali qidiruv (eng so'nggi va ishonchli klientlar)
+        search_opts = _get_active_opts({
+            'extract_flat': True,
+            'skip_download': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android_vr', 'tv_embedded', 'mweb']
+                }
+            }
+        })
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -103,6 +106,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
 
+        # 2. SoundCloud zaxira qidiruvi
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -123,14 +127,52 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             logging.error(f"SoundCloud search error: {e}")
             return []
 
-        return []
-
     return await asyncio.to_thread(_search)
+
+
+async def _download_via_external_api(url: str, file_prefix: str) -> str | None:
+    """YouTube mutlaqo bloklangan ssenariyda Cobalt API orqali audio sug'urib olish."""
+    api_instances = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwiatek.xyz/api/json"
+    ]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    payload = {
+        "url": url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3"
+    }
+
+    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+
+    async with aiohttp.ClientSession() as session:
+        for instance in api_instances:
+            try:
+                async with session.post(instance, json=payload, headers=headers, timeout=12) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        download_url = data.get("url")
+                        if download_url:
+                            async with session.get(download_url) as file_resp:
+                                if file_resp.status == 200:
+                                    with open(output_path, "wb") as f:
+                                        f.write(await file_resp.read())
+                                    if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                                        return output_path
+            except Exception as e:
+                logging.warning(f"External API ({instance}) xatosi: {e}")
+                continue
+    return None
 
 
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
+    # 1. Bazadan (Keshdan) tekshirish
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -146,13 +188,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         title = "Audio Track"
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
 
-        # Bloklanish ehtimoli eng kam bo'lgan klientlar ketma-ketligi
+        # YouTube bloklanishini chetlab o'tish uchun klientlar tartibi
         clients_to_try = [
-            ['tv_embedded'],
             ['ios'],
             ['android_vr'],
+            ['tv_embedded'],
             ['android'],
-            ['mweb']
+            ['mweb'],
+            ['web']
         ]
 
         formats_to_try = [
@@ -166,7 +209,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                 ydl_opts = _get_active_opts({
                     'format': fmt,
                     'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
-                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                    'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                     'extractor_args': {
                         'youtube': {
                             'player_client': client,
@@ -196,7 +239,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                     logging.warning(f"Client {client} va format {fmt} bilan yuklash o'xshamadi: {e}")
                     continue
 
-        # Agar YouTube mutlaqo bloklangan bo'lsa, SoundCloud'dan zaxira sifatida yuklash
+        # 2. Agar yt-dlp to'g'ridan-to'g'ri YouTube'dan yuklay olmasa, SoundCloud fallback
         try:
             sc_opts = _get_active_opts({
                 'format': 'bestaudio/best',
@@ -219,13 +262,25 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
         return None, title, None
 
-    return await asyncio.to_thread(_download)
+    # yt-dlp urinishlari
+    file_path, track_title, cached_id = await asyncio.to_thread(_download)
+    if file_path and os.path.exists(file_path):
+        return file_path, track_title, cached_id
+
+    # 3. Zaxira: Tashqi API orqali qattiq yuklab olish (Cobalt)
+    logging.info("YouTube yt-dlp orqali yuklanmadi. Zaxira API ishga tushirilmoqda...")
+    api_file = await _download_via_external_api(url, file_prefix)
+    if api_file:
+        return api_file, track_title, None
+
+    return None, track_title, None
 
 
 async def download_media(url: str) -> dict:
     clients_to_try = [
-        ['tv_embedded'],
         ['ios'],
+        ['android_vr'],
+        ['tv_embedded'],
         ['android'],
         ['mweb', 'web']
     ]
