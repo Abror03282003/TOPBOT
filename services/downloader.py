@@ -107,10 +107,11 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
     if clients:
         extractor_args['player_client'] = list(clients)
     
-    if extractor_args:
-        opts['extractor_args'] = {'youtube': extractor_args}
-    else:
-        opts.pop('extractor_args', None)
+    # OAuth2 orqali autentifikatsiya sozlamalari
+    extractor_args['oauth2'] = ['true']
+    opts['username'] = 'oauth2'
+    
+    opts['extractor_args'] = {'youtube': extractor_args}
 
     if PROXY_URL:
         opts['proxy'] = PROXY_URL
