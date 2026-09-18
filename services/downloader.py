@@ -137,22 +137,27 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV
+# QIDIRUV (Yangilangan va mukammallashtirilgan mantiq)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     search_query = query.strip()
 
-    # 1. Piped API orqali qidiruv (eng tez va ishonchli)
-    results = await _search_via_piped(search_query, limit)
+    # 1. Piped API orqali qidiruv (Musika bo'limi filtrida)
+    results = await _search_via_piped(search_query, limit, filter_type="music_songs")
     if results:
         return results
 
-    # 2. Invidious orqali qidiruv
+    # 2. Piped API orqali umumiy video qidiruvi (Matnli parchalar va norasmiy kliplar uchun)
+    results = await _search_via_piped(search_query, limit, filter_type="all")
+    if results:
+        return results
+
+    # 3. Invidious orqali qidiruv
     results = await _search_via_invidious(search_query, limit)
     if results:
         return results
 
-    # 3. yt-dlp zaxira
+    # 4. yt-dlp zaxira (Matn orqali izlanganda 100% natija beruvchi YouTube qidiruvi)
     def _yt_dlp_search():
         base = {
             'extract_flat': True, 
@@ -161,7 +166,8 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         }
         for clients, use_cookies in CLIENT_ATTEMPTS:
             try:
-                with yt_dlp.YoutubeDL(_build_opts(base, clients, use_cookies)) as ydl:
+                opts = _build_opts(base, clients, use_cookies)
+                with yt_dlp.YoutubeDL(opts) as ydl:
                     res = ydl.extract_info(f"ytsearch{limit}:{search_query}", download=False)
                 results = []
                 if res and res.get('entries'):
@@ -182,13 +188,13 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     return await asyncio.to_thread(_yt_dlp_search)
 
 
-async def _search_via_piped(query: str, limit: int) -> list[dict]:
+async def _search_via_piped(query: str, limit: int, filter_type: str = "music_songs") -> list[dict]:
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     async with aiohttp.ClientSession(headers=headers) as session:
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/search"
-                params = {"q": query, "filter": "music_songs"}
+                params = {"q": query, "filter": filter_type}
                 async with session.get(url, params=params, proxy=PROXY_URL, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
