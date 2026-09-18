@@ -60,12 +60,12 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
+# Ishlayotgan yangi Invidious instansiyalari
 INVIDIOUS_INSTANCES = [
-    "https://invidious.flokinet.to",
-    "https://invidious.privacydev.net",
-    "https://inv.nadeko.net",
-    "https://invidious.drgns.space",
-    "https://vid.puffyan.us"
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.im",
+    "https://invidious.no-name-given.de",
+    "https://invidious.perennialte.ch"
 ]
 
 PROXY_URL = os.environ.get("PROXY_URL")
@@ -107,11 +107,10 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
     if clients:
         extractor_args['player_client'] = list(clients)
     
-    # OAuth2 orqali autentifikatsiya sozlamalari
-    extractor_args['oauth2'] = ['true']
-    opts['username'] = 'oauth2'
-    
-    opts['extractor_args'] = {'youtube': extractor_args}
+    if extractor_args:
+        opts['extractor_args'] = {'youtube': extractor_args}
+    else:
+        opts.pop('extractor_args', None)
 
     if PROXY_URL:
         opts['proxy'] = PROXY_URL
@@ -167,9 +166,16 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         return results
 
     def _sc_search():
-        base = {'extract_flat': True, 'skip_download': True, 'ignoreerrors': True}
+        sc_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'ignoreerrors': True,
+            'user_agent': USER_AGENT
+        }
         try:
-            with yt_dlp.YoutubeDL(_build_opts(base, None, False)) as ydl:
+            with yt_dlp.YoutubeDL(sc_opts) as ydl:
                 res = ydl.extract_info(f"scsearch{limit}:{search_query}", download=False)
             out = []
             if res and res.get('entries'):
