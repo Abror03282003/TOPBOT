@@ -183,12 +183,12 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. Direct yt-dlp yuklash (Kengaytirilgan fallback sozlamalari bilan)
+    # 1. yt-dlp orqali universal formatda yuklab olish
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 2. Invidious Stream
+    # 2. Invidious API
     if not youtube_id.startswith("http"):
         inv_file, title = await _download_via_invidious(youtube_id, file_prefix)
         if inv_file:
@@ -270,68 +270,52 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
 
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
     _ensure_cookies_file()
-    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.%(ext)s")
+    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.%(ext)s")
     
-    # YouTube cheklovlarini aylanib o'tish konfiguratsiyalari
-    attempts = [
-        # 1-urinish: TV Embed client va moslashuvchan audio format
-        {
-            'format': 'bestaudio/ba/b',
-            'player_client': ['tv_embedded', 'web_embedded']
-        },
-        # 2-urinish: Android VR / Creator client
-        {
-            'format': 'bestaudio/best',
-            'player_client': ['android_vr', 'web_creator']
-        },
-        # 3-urinish: Umumiylashtirilgan istalgan stream (xatto past sifat bo'lsa ham)
-        {
-            'format': 'worst/ba*/b*',
-            'player_client': ['ios', 'android']
-        }
-    ]
-
-    for attempt in attempts:
-        opts = {
-            'format': attempt['format'],
-            'outtmpl': outtmpl,
-            'overwrites': True,
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'user_agent': USER_AGENT,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': attempt['player_client'],
-                    'skip': ['dash', 'hls']
-                }
+    # Video yuklab olgan aniq ishlayotgan format va player_client sozlamalari
+    opts = {
+        'format': 'b/best',
+        'outtmpl': outtmpl,
+        'overwrites': True,
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': USER_AGENT,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['tv_embedded', 'android', 'web'],
             }
         }
+    }
 
-        if _has_cookies():
-            opts['cookiefile'] = COOKIES_PATH
+    if _has_cookies():
+        opts['cookiefile'] = COOKIES_PATH
 
-        if FFMPEG_PATH:
-            opts['ffmpeg_location'] = FFMPEG_PATH
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'Audio Track') if info else 'Audio Track'
-                
-                pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.*")
-                for f in glob.glob(pattern):
-                    if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
-                        logging.info(f"✅ yt-dlp audio yuklandi ({attempt['player_client']}): {f}")
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Audio Track') if info else 'Audio Track'
+            
+            # Yuklab olingan xom media faylini izlash
+            pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.*")
+            downloaded_files = glob.glob(pattern)
+            
+            for f in downloaded_files:
+                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                    mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+                    
+                    # FFmpeg yordamida audio ajratib MP3 formatga o'tkazish
+                    if FFMPEG_PATH:
+                        sound = AudioSegment.from_file(f)
+                        sound.export(mp3_path, format="mp3", bitrate="192k")
+                        if os.path.exists(f):
+                            os.remove(f)
+                        logging.info(f"✅ Audio yuklandi va MP3ga o'tkazildi: {mp3_path}")
+                        return mp3_path, title
+                    else:
+                        logging.info(f"✅ Audio yuklandi: {f}")
                         return f, title
-        except Exception as e:
-            logging.warning(f"yt-dlp audio xatosi ({attempt['player_client']}): {e}")
-            continue
+    except Exception as e:
+        logging.error(f"yt-dlp audio xatoligi: {e}")
 
     return None, "Audio Track"
 
@@ -346,14 +330,13 @@ def _yt_dlp_download_video(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-6:]
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.%(ext)s")
 
-    # Videolar uchun optimal va yengil stream sozlamalari (Railway limitiga sig'ishi uchun)
     opts = {
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': outtmpl,
         'overwrites': True,
         'quiet': True,
         'no_warnings': True,
-        'max_filesize': 50 * 1024 * 1024, # 50MB telegram limiti
+        'max_filesize': 50 * 1024 * 1024,
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
