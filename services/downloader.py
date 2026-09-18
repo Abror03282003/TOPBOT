@@ -183,12 +183,12 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. yt-dlp orqali universal formatda yuklab olish
+    # 1. Direct yt-dlp (Ishonchli video formatidan ajratib olish)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 2. Invidious API
+    # 2. Invidious Direct Audio Stream
     if not youtube_id.startswith("http"):
         inv_file, title = await _download_via_invidious(youtube_id, file_prefix)
         if inv_file:
@@ -272,9 +272,9 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
     _ensure_cookies_file()
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.%(ext)s")
     
-    # Video yuklab olgan aniq ishlayotgan format va player_client sozlamalari
+    # Video uchun 100% ishlayotgan format va player_client sozlamalari
     opts = {
-        'format': 'b/best',
+        'format': 'bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': outtmpl,
         'overwrites': True,
         'quiet': True,
@@ -282,7 +282,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'user_agent': USER_AGENT,
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded', 'android', 'web'],
+                'player_client': ['tv_embedded', 'android_vr', 'web'],
             }
         }
     }
@@ -295,7 +295,6 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
             info = ydl.extract_info(url, download=True)
             title = info.get('title', 'Audio Track') if info else 'Audio Track'
             
-            # Yuklab olingan xom media faylini izlash
             pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.*")
             downloaded_files = glob.glob(pattern)
             
@@ -303,14 +302,18 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                     mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
                     
-                    # FFmpeg yordamida audio ajratib MP3 formatga o'tkazish
+                    # FFmpeg orqali MP3 formatiga o'tkazamiz
                     if FFMPEG_PATH:
-                        sound = AudioSegment.from_file(f)
-                        sound.export(mp3_path, format="mp3", bitrate="192k")
-                        if os.path.exists(f):
-                            os.remove(f)
-                        logging.info(f"✅ Audio yuklandi va MP3ga o'tkazildi: {mp3_path}")
-                        return mp3_path, title
+                        try:
+                            sound = AudioSegment.from_file(f)
+                            sound.export(mp3_path, format="mp3", bitrate="192k")
+                            if os.path.exists(f):
+                                os.remove(f)
+                            logging.info(f"✅ Audio yuklandi va MP3ga o'tkazildi: {mp3_path}")
+                            return mp3_path, title
+                        except Exception as conv_err:
+                            logging.error(f"FFmpeg konvertatsiya xatosi: {conv_err}")
+                            return f, title
                     else:
                         logging.info(f"✅ Audio yuklandi: {f}")
                         return f, title
