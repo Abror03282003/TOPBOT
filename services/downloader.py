@@ -38,13 +38,7 @@ COOKIES_PATH = "cookies.txt"
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Ayni vaqtda faol bo'lgan rasmiy Cobalt va Invidious API ro'yxati
-COBALT_INSTANCES = [
-    "https://api.cobalt.tools",
-    "https://cobalt.streamrip.net",
-    "https://api.qewertyy.dev/cobalt"
-]
-
+# Faol API Serverlar
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
@@ -56,6 +50,12 @@ PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi.mha.fi",
     "https://pipedapi.drgns.space"
+]
+
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
+    "https://cobalt.streamrip.net",
+    "https://api.qewertyy.dev/cobalt"
 ]
 
 def _ensure_cookies_file():
@@ -184,7 +184,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. Invidious Direct Audio Stream (YouTube Server IP Blokirovkasiga ta'sir qilmaydi)
+    # 1. Invidious Direct Audio Stream (YouTube Server IP blokiga tushmaydi)
     if not youtube_id.startswith("http"):
         inv_file, title = await _download_via_invidious(youtube_id, file_prefix)
         if inv_file:
@@ -201,7 +201,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         if piped_file:
             return piped_file, title, None
 
-    # 4. Oxirgi chora: yt-dlp (OAuth2 / iOS Client Emulation)
+    # 4. yt-dlp (Moslashuvchan formatlar zanjiri bilan)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
@@ -235,7 +235,7 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
                                 async for chunk in s_resp.content.iter_chunked(64 * 1024):
                                     f.write(chunk)
                             if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                                logging.info(f"✅ Invidious stream orqali yuklandi.")
+                                logging.info("✅ Invidious stream orqali yuklandi.")
                                 return output_path, title
             except Exception:
                 continue
@@ -268,9 +268,9 @@ async def _download_via_cobalt(url: str, file_prefix: str) -> str | None:
                                         async for chunk in file_resp.content.iter_chunked(64 * 1024):
                                             f.write(chunk)
                                     if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                                        logging.info(f"✅ Cobalt API orqali yuklandi.")
+                                        logging.info("✅ Cobalt API orqali yuklandi.")
                                         return output_path
-            except Exception as e:
+            except Exception:
                 continue
     return None
 
@@ -298,7 +298,7 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
                                 async for chunk in s_resp.content.iter_chunked(64 * 1024):
                                     f.write(chunk)
                             if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                                logging.info(f"✅ Piped Stream orqali yuklandi.")
+                                logging.info("✅ Piped Stream orqali yuklandi.")
                                 return output_path, title
             except Exception:
                 continue
@@ -306,47 +306,72 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
 
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
     _ensure_cookies_file()
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.mp3")
+    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.%(ext)s")
     
-    # iOS va Android emulyatsiyasi orqali YouTube bot protection'ni aylanib o'tish
-    opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_path,
-        'overwrites': True,
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': USER_AGENT,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'mweb'],
-                'skip': ['hls', 'dash']
+    # Har xil client va format birikmalari
+    attempts = [
+        # 1-urinish: bestaudio (har qanday audio format)
+        {
+            'format': 'bestaudio/best',
+            'player_client': ['mweb', 'web']
+        },
+        # 2-urinish: Video+Audio birga bo'lsa ham eng past sifatli streamni olish (xato bermaydi)
+        {
+            'format': 'worst/ba/b',
+            'player_client': ['android', 'ios']
+        },
+        # 3-urinish: Standart fallback
+        {
+            'format': 'ba*/b*',
+            'player_client': ['tv', 'tv_embedded']
+        }
+    ]
+
+    for attempt in attempts:
+        opts = {
+            'format': attempt['format'],
+            'outtmpl': outtmpl,
+            'overwrites': True,
+            'quiet': True,
+            'no_warnings': True,
+            'user_agent': USER_AGENT,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': attempt['player_client']
+                }
             }
         }
-    }
 
-    if _has_cookies():
-        opts['cookiefile'] = COOKIES_PATH
+        if _has_cookies():
+            opts['cookiefile'] = COOKIES_PATH
 
-    if FFMPEG_PATH:
-        opts['ffmpeg_location'] = FFMPEG_PATH
+        if FFMPEG_PATH:
+            opts['ffmpeg_location'] = FFMPEG_PATH
+            opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Audio Track') if info else 'Audio Track'
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                return output_path, title
-    except Exception as e:
-        logging.error(f"yt-dlp xatoligi: {e}")
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                title = info.get('title', 'Audio Track') if info else 'Audio Track'
+                
+                # Yuklangan faylni qidirish
+                pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.*")
+                for f in glob.glob(pattern):
+                    if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                        logging.info(f"✅ yt-dlp orqali yuklandi: {f}")
+                        return f, title
+        except Exception as e:
+            logging.warning(f"yt-dlp urinish xatosi ({attempt['player_client']}): {e}")
+            continue
 
     return None, "Audio Track"
 
 # ---------------------------------------------------------------------------
-# MEDIA YUKLASH
+# MEDIA YUKLASH (URL bo'yicha)
 # ---------------------------------------------------------------------------
-async def download_media(url: str) -> dict:
-    file_prefix = "media_" + str(abs(hash(url)))[-6:]
-    cobalt_file = await _download_via_cobalt(url, file_prefix)
-    if cobalt_file:
-        return {"file_path": cobalt_file, "title": "Media", "id": file_prefix}
-    return {"file_path": None, "title": "Media", "id": None}
+async def download_media(url: str, is_audio: bool = True) -> tuple[str | None, str, str | None]:
+    return await download_audio_by_id(url)
