@@ -79,7 +79,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['mweb', 'android', 'ios', 'web']
+                'player_client': ['android_creator', 'android', 'ios', 'mweb']
             }
         }
     })
@@ -147,16 +147,16 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
 
         clients_to_try = [
+            ['android_creator'],
             ['android'],
-            ['mweb'],
             ['ios'],
-            ['web'],
-            ['tv']
+            ['mweb'],
+            ['web']
         ]
 
         formats_to_try = [
             'bestaudio/best',
-            'best',
+            'ba/b',
             'worstaudio/worst'
         ]
 
@@ -168,7 +168,8 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                     'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                     'extractor_args': {
                         'youtube': {
-                            'player_client': client
+                            'player_client': client,
+                            'skip': ['webpage', 'configs']
                         }
                     }
                 })
@@ -191,6 +192,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
                         if os.path.exists(f) and os.path.getsize(f) > 0:
                             return f, title, None
                 except Exception as e:
+                    logging.warning(f"Client {client} va format {fmt} uchun yuklash o'xshamadi: {e}")
                     continue
 
         return None, title, None
@@ -200,10 +202,10 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 async def download_media(url: str) -> dict:
     clients_to_try = [
-        ['mweb', 'android'],
-        ['ios', 'web'],
+        ['android_creator'],
         ['android'],
-        ['web']
+        ['ios'],
+        ['mweb', 'web']
     ]
 
     def _download():
@@ -217,6 +219,7 @@ async def download_media(url: str) -> dict:
                 'extractor_args': {
                     'youtube': {
                         'player_client': client,
+                        'skip': ['webpage', 'configs']
                     }
                 }
             })
@@ -237,6 +240,7 @@ async def download_media(url: str) -> dict:
                                 "id": info.get("id")
                             }
             except Exception as e:
+                logging.warning(f"Media yuklashda klient {client} muvaffaqiyatsiz bo'ldi: {e}")
                 continue
 
         return {"file_path": None, "title": "Video", "id": None}
