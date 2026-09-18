@@ -36,7 +36,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+              "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
 BASE_YDL_OPTS = {
     'quiet': True,
@@ -44,8 +44,8 @@ BASE_YDL_OPTS = {
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'geo_bypass': True,
-    'retries': 5,
-    'socket_timeout': 30,
+    'retries': 3,
+    'socket_timeout': 15,
 }
 
 if FFMPEG_PATH:
@@ -59,23 +59,24 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
-# Faol va tekshirilgan muqobil instansiyalar
+# 2026-yilda faol va tekshirilgan ishchi public instansiyalar
 INVIDIOUS_INSTANCES = [
-    "https://invidious.nerdvpn.de",
-    "https://invidious.perennialte.ch",
     "https://inv.nadeko.net",
-    "https://invidious.privacydev.net"
+    "https://invidious.nerdvpn.de",
+    "https://invidious.no-logs.how",
+    "https://invidious.projectsegfau.lt"
 ]
 
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.col2.io"
+    "https://pipedapi.mha.fi",
+    "https://pipedapi.tokhmi.xyz"
 ]
 
 COBALT_INSTANCES = [
-    "https://api.cobalt.tools",
-    "https://cobalt-api.kwippy.me"
+    "https://cobalt.streamrip.net",
+    "https://cobalt.qewertyy.dev",
+    "https://api.cobalt.tools"
 ]
 
 PROXY_URL = os.environ.get("PROXY_URL")
@@ -141,17 +142,17 @@ def format_duration(seconds) -> str:
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     search_query = query.strip()
 
-    # 1. Invidious orqali qidiruv
-    results = await _search_via_invidious(search_query, limit)
-    if results:
-        return results
-
-    # 2. Piped API orqali qidiruv
+    # 1. Piped API orqali qidiruv (eng tez va ishonchli)
     results = await _search_via_piped(search_query, limit)
     if results:
         return results
 
-    # 3. yt-dlp zaxira qidiruv
+    # 2. Invidious orqali qidiruv
+    results = await _search_via_invidious(search_query, limit)
+    if results:
+        return results
+
+    # 3. yt-dlp zaxira
     def _yt_dlp_search():
         base = {
             'extract_flat': True, 
@@ -175,68 +176,63 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                 if results:
                     return results
             except Exception as e:
-                logging.warning(f"YouTube qidiruv ({clients}) xatosi: {e}")
+                logging.warning(f"yt-dlp search error ({clients}): {e}")
         return []
 
     return await asyncio.to_thread(_yt_dlp_search)
 
 
-async def _search_via_invidious(query: str, limit: int) -> list[dict]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            for instance in INVIDIOUS_INSTANCES:
-                try:
-                    url = f"{instance}/api/v1/search"
-                    params = {"q": query, "type": "video"}
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            results = []
-                            for entry in data[:limit]:
-                                if entry.get("videoId"):
-                                    results.append({
-                                        'id': entry.get("videoId"),
-                                        'title': entry.get("title", "Unknown Title"),
-                                        'duration': format_duration(entry.get("lengthSeconds", 0)),
-                                        'uploader': entry.get("author", "Unknown Artist")
-                                    })
-                            if results:
-                                return results
-                except Exception as e:
-                    logging.warning(f"Invidious qidiruv xatosi ({instance}): {e}")
-                    continue
-    except Exception as e:
-        logging.warning(f"Invidious sessiyasi xatosi: {e}")
+async def _search_via_piped(query: str, limit: int) -> list[dict]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in PIPED_INSTANCES:
+            try:
+                url = f"{instance}/search"
+                params = {"q": query, "filter": "music_songs"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        items = data.get("items", [])
+                        results = []
+                        for entry in items[:limit]:
+                            item_id = entry.get("url", "").replace("/watch?v=", "")
+                            if item_id:
+                                results.append({
+                                    'id': item_id,
+                                    'title': entry.get("title", "Unknown Title"),
+                                    'duration': format_duration(entry.get("duration", 0)),
+                                    'uploader': entry.get("uploaderName", "Unknown Artist")
+                                })
+                        if results:
+                            return results
+            except Exception:
+                continue
     return []
 
 
-async def _search_via_piped(query: str, limit: int) -> list[dict]:
-    try:
-        async with aiohttp.ClientSession() as session:
-            for instance in PIPED_INSTANCES:
-                try:
-                    url = f"{instance}/search"
-                    params = {"q": query, "filter": "music_songs"}
-                    async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            items = data.get("items", [])
-                            results = []
-                            for entry in items[:limit]:
-                                item_id = entry.get("url", "").replace("/watch?v=", "")
-                                if item_id:
-                                    results.append({
-                                        'id': item_id,
-                                        'title': entry.get("title", "Unknown Title"),
-                                        'duration': format_duration(entry.get("duration", 0)),
-                                        'uploader': entry.get("uploaderName", "Unknown Artist")
-                                    })
-                            if results:
-                                return results
-                except Exception:
-                    continue
-    except Exception:
-        pass
+async def _search_via_invidious(query: str, limit: int) -> list[dict]:
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/search"
+                params = {"q": query, "type": "video"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                        results = []
+                        for entry in data[:limit]:
+                            if entry.get("videoId"):
+                                results.append({
+                                    'id': entry.get("videoId"),
+                                    'title': entry.get("title", "Unknown Title"),
+                                    'duration': format_duration(entry.get("lengthSeconds", 0)),
+                                    'uploader': entry.get("author", "Unknown Artist")
+                                })
+                        if results:
+                            return results
+            except Exception:
+                continue
     return []
 
 
@@ -259,7 +255,7 @@ def _find_downloaded(file_prefix: str) -> str | None:
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
 
-    # 1. Keshni tekshirish
+    # 1. Kesh
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -271,24 +267,24 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 2. Cobalt API orqali yuklab ko'rish (Server IP bloki va Cookie talablarini aylanib o'tadi)
-    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
-
-    # 3. Invidious API orqali yuklab ko'rish
-    if not youtube_id.startswith("http"):
-        file_path, title = await _download_via_invidious(youtube_id, file_prefix)
-        if file_path:
-            return file_path, title, None
-
-    # 4. Piped API orqali yuklab ko'rish
+    # 2. Piped API orqali yuklash (eng tez audio oqimini beradi)
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_piped(youtube_id, file_prefix)
         if file_path:
             return file_path, title, None
 
-    # 5. Zaxira: yt-dlp
+    # 3. Cobalt API
+    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
+    if cobalt_file:
+        return cobalt_file, "Audio Track", None
+
+    # 4. Invidious API
+    if not youtube_id.startswith("http"):
+        file_path, title = await _download_via_invidious(youtube_id, file_prefix)
+        if file_path:
+            return file_path, title, None
+
+    # 5. yt-dlp (Zaxira)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
@@ -296,37 +292,69 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     return None, "Audio Track", None
 
 
+async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | None, str]:
+    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_piped.mp3")
+    headers = {"User-Agent": USER_AGENT}
+
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in PIPED_INSTANCES:
+            try:
+                url = f"{instance}/streams/{video_id}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json(content_type=None)
+                    title = data.get("title", "Audio Track")
+                    audio_streams = data.get("audioStreams", [])
+                    if not audio_streams:
+                        continue
+                    audio_url = audio_streams[0].get("url")
+                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
+                        if stream_resp.status == 200:
+                            with open(output_path, "wb") as f:
+                                async for chunk in stream_resp.content.iter_chunked(64 * 1024):
+                                    f.write(chunk)
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                                logging.info("✅ Piped API orqali yuklandi.")
+                                return output_path, title
+            except Exception:
+                continue
+
+    return None, "Audio Track"
+
+
 async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True) -> str | None:
     ext = "mp3" if is_audio else "mp4"
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.{ext}")
 
-    async with aiohttp.ClientSession() as session:
-        payload = {
-            "url": url,
-            "downloadMode": "audio" if is_audio else "auto",
-            "audioFormat": "mp3"
-        }
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT
-        }
+    payload = {
+        "url": url,
+        "downloadMode": "audio" if is_audio else "auto",
+        "audioFormat": "mp3"
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT
+    }
+
+    async with aiohttp.ClientSession(headers=headers) as session:
         for instance in COBALT_INSTANCES:
             try:
-                async with session.post(f"{instance}/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.post(f"{instance}/", json=payload, timeout=aiohttp.ClientTimeout(total=7)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         media_link = data.get("url")
                         if media_link:
-                            async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=40)) as file_resp:
+                            async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
                                 if file_resp.status == 200:
                                     with open(output_path, "wb") as f:
-                                        f.write(await file_resp.read())
+                                        async for chunk in file_resp.content.iter_chunked(64 * 1024):
+                                            f.write(chunk)
                                     if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                                         logging.info(f"✅ Cobalt API ({instance}) orqali yuklandi.")
                                         return output_path
-            except Exception as e:
-                logging.warning(f"Cobalt API ({instance}) xatosi: {e}")
+            except Exception:
                 continue
 
     return None
@@ -334,70 +362,35 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
 
 async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str | None, str]:
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.mp3")
+    headers = {"User-Agent": USER_AGENT}
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            for instance in INVIDIOUS_INSTANCES:
-                try:
-                    url = f"{instance}/api/v1/videos/{video_id}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=6), headers={"Accept": "application/json"}) as resp:
-                        if resp.status != 200:
-                            continue
-                        data = await resp.json(content_type=None)
-                        title = data.get("title", "Audio Track")
-                        adaptive_formats = data.get("adaptiveFormats", [])
-                        audio_streams = [
-                            f for f in adaptive_formats
-                            if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")
-                        ]
-                        if not audio_streams:
-                            continue
-                        audio_url = audio_streams[0].get("url")
-                        async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=30)) as stream_resp:
-                            if stream_resp.status == 200:
-                                with open(output_path, "wb") as f:
-                                    f.write(await stream_resp.read())
-                                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                                    logging.info("✅ Invidious orqali yuklandi.")
-                                    return output_path, title
-                except Exception as e:
-                    logging.warning(f"Invidious yuklash xatosi ({instance}): {e}")
-                    continue
-    except Exception as e:
-        logging.warning(f"Invidious sessiyasi xatosi: {e}")
-
-    return None, "Audio Track"
-
-
-async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | None, str]:
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_piped.mp3")
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            for instance in PIPED_INSTANCES:
-                try:
-                    url = f"{instance}/streams/{video_id}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                        if resp.status != 200:
-                            continue
-                        data = await resp.json(content_type=None)
-                        title = data.get("title", "Audio Track")
-                        audio_streams = data.get("audioStreams", [])
-                        if not audio_streams:
-                            continue
-                        audio_url = audio_streams[0].get("url")
-                        async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=30)) as stream_resp:
-                            if stream_resp.status == 200:
-                                with open(output_path, "wb") as f:
-                                    f.write(await stream_resp.read())
-                                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-                                    logging.info("✅ Piped API orqali yuklandi.")
-                                    return output_path, title
-                except Exception as e:
-                    logging.warning(f"Piped yuklash xatosi ({instance}): {e}")
-                    continue
-    except Exception as e:
-        logging.warning(f"Piped sessiyasi xatosi: {e}")
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/videos/{video_id}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json(content_type=None)
+                    title = data.get("title", "Audio Track")
+                    adaptive_formats = data.get("adaptiveFormats", [])
+                    audio_streams = [
+                        f for f in adaptive_formats
+                        if f.get("container") in ["m4a", "webm", "mp3"] or "audio" in f.get("type", "")
+                    ]
+                    if not audio_streams:
+                        continue
+                    audio_url = audio_streams[0].get("url")
+                    async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=25)) as stream_resp:
+                        if stream_resp.status == 200:
+                            with open(output_path, "wb") as f:
+                                async for chunk in stream_resp.content.iter_chunked(64 * 1024):
+                                    f.write(chunk)
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                                logging.info("✅ Invidious orqali yuklandi.")
+                                return output_path, title
+            except Exception:
+                continue
 
     return None, "Audio Track"
 
@@ -418,7 +411,6 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
             'preferredquality': '192',
         }]
 
-    last_error = None
     for fmt in formats_to_try:
         extra['format'] = fmt
         for clients, use_cookies in CLIENT_ATTEMPTS:
@@ -432,12 +424,9 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
                 if found:
                     logging.info(f"✅ yt-dlp orqali yuklandi ({clients}): {found}")
                     return found, title
-            except Exception as e:
-                last_error = e
-                logging.warning(f"yt-dlp urinish muvaffaqiyatsiz ({clients}, format={fmt}): {e}")
+            except Exception:
                 continue
 
-    logging.warning(f"yt-dlp orqali yuklab bo'lmadi. Oxirgi xato: {last_error}")
     return None, title
 
 
@@ -479,8 +468,7 @@ def _yt_dlp_download_media(url: str) -> dict:
 
             if os.path.exists(filename) and os.path.getsize(filename) > 0:
                 return {"file_path": filename, "title": info.get("title", "Video"), "id": info.get("id")}
-        except Exception as e:
-            logging.warning(f"yt-dlp media urinish ({clients}) xatosi: {e}")
+        except Exception:
             continue
 
     return {"file_path": None, "title": "Video", "id": None}
