@@ -51,7 +51,6 @@ BASE_YDL_OPTS = {
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
-# Har bir urinish: (player_client ro'yxati, cookies ishlatilsinmi)
 CLIENT_ATTEMPTS = [
     (['web_safari'], True),
     (['web'], True),
@@ -61,7 +60,6 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
-# Ishlaydigan Invidious zaxira instanslari
 INVIDIOUS_INSTANCES = [
     "https://invidious.flokinet.to",
     "https://invidious.privacydev.net",
@@ -122,16 +120,21 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV — asosiy: yt-dlp, zaxira: Invidious, so'ng SoundCloud
+# QIDIRUV — Foydalanuvchi yozgan sof matn bo'yicha global qidiruv
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
+    search_query = query.strip()
 
     def _yt_dlp_search():
-        base = {'extract_flat': True, 'skip_download': True, 'ignoreerrors': True}
+        base = {
+            'extract_flat': True, 
+            'skip_download': True, 
+            'ignoreerrors': True
+        }
         for clients, use_cookies in CLIENT_ATTEMPTS:
             try:
                 with yt_dlp.YoutubeDL(_build_opts(base, clients, use_cookies)) as ydl:
-                    res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                    res = ydl.extract_info(f"ytsearch{limit}:{search_query}", download=False)
                 results = []
                 if res and res.get('entries'):
                     for entry in res['entries']:
@@ -152,7 +155,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     if results:
         return results
 
-    results = await _search_via_invidious(query, limit)
+    results = await _search_via_invidious(search_query, limit)
     if results:
         return results
 
@@ -160,7 +163,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         base = {'extract_flat': True, 'skip_download': True, 'ignoreerrors': True}
         try:
             with yt_dlp.YoutubeDL(_build_opts(base, None, False)) as ydl:
-                res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+                res = ydl.extract_info(f"scsearch{limit}:{search_query}", download=False)
             out = []
             if res and res.get('entries'):
                 for entry in res['entries']:
@@ -210,7 +213,7 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH — 1: Kesh, 2: Cobalt, 3: yt-dlp, 4: Invidious
+# AUDIO YUKLASH
 # ---------------------------------------------------------------------------
 def _find_downloaded(file_prefix: str) -> str | None:
     expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
@@ -239,21 +242,21 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. Cobalt API (Eng tez va blokdan holi birinchi urinish)
-    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
-
-    # 2. Asosiy: yt-dlp (klient fallback zanjiri bilan)
+    # 1. yt-dlp (Asosiy va barqaror yuklovchi)
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 3. Zaxira: Invidious (faqat YouTube video ID uchun)
+    # 2. Invidious (Zaxira)
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_invidious(youtube_id, file_prefix)
         if file_path:
             return file_path, title, None
+
+    # 3. Cobalt API (Qo'shimcha zaxira)
+    cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
+    if cobalt_file:
+        return cobalt_file, "Audio Track", None
 
     return None, "Audio Track", None
 
@@ -261,7 +264,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
     title = "Audio Track"
     
-    # Har qanday mavjud audio oqimini qabul qilish uchun moslashuvchan formatlar
     formats_to_try = [
         'bestaudio/best',
         'bestaudio[acodec!=none]/best[acodec!=none]',
@@ -292,7 +294,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
                     title = info.get('title', title)
                 found = _find_downloaded(file_prefix)
                 if found:
-                    logging.info(f"✅ yt-dlp orqali yuklandi ({clients}, cookies={use_cookies}, format={fmt}): {found}")
+                    logging.info(f"✅ yt-dlp orqali yuklandi ({clients}, cookies={use_cookies}): {found}")
                     return found, title
             except Exception as e:
                 last_error = e
@@ -342,17 +344,10 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
 
 
 # ---------------------------------------------------------------------------
-# VIDEO / MEDIA YUKLASH — Asosiy: Cobalt API, Zaxira: yt-dlp
+# MEDIA YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     file_id = str(abs(hash(url)))[-8:]
-
-    # 1. Birinchi Cobalt API orqali sinab ko'rish
-    cobalt_res = await _download_via_cobalt(url, file_id, is_audio=False)
-    if cobalt_res:
-        return {"file_path": cobalt_res, "title": "Downloaded Media", "id": file_id}
-
-    # 2. Zaxira sifatida asl yt-dlp logikasi
     return await asyncio.to_thread(_yt_dlp_download_media, url)
 
 
@@ -390,7 +385,6 @@ def _yt_dlp_download_media(url: str) -> dict:
 
 
 async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True) -> str | None:
-    """Cobalt API v10+ spetsifikatsiyasiga moslang tezkor yuklash yordamchisi"""
     ext = "mp3" if is_audio else "mp4"
     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.{ext}")
 
@@ -411,15 +405,13 @@ async def _download_via_cobalt(url: str, file_prefix: str, is_audio: bool = True
                     data = await resp.json()
                     media_link = data.get("url")
                     if media_link:
-                        async with session.get(media_link, headers={"User-Agent": USER_AGENT}, timeout=aiohttp.ClientTimeout(total=45)) as file_resp:
+                        async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=35)) as file_resp:
                             if file_resp.status == 200:
                                 with open(output_path, "wb") as f:
                                     f.write(await file_resp.read())
                                 if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
                                     logging.info(f"✅ Cobalt API orqali yuklandi: {output_path}")
                                     return output_path
-                else:
-                    logging.warning(f"Cobalt API status kodi: {resp.status}")
         except Exception as e:
             logging.warning(f"Cobalt API xatosi: {e}")
 
