@@ -92,7 +92,17 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             'skip_download': True,
             'ignoreerrors': True,
             'quiet': True,
+            'username': 'oauth2',
+            'password': '',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv', 'android_vr'],
+                }
+            }
         }
+        if _has_cookies():
+            opts['cookiefile'] = COOKIES_PATH
+
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{search_query}", download=False)
             items = []
@@ -177,7 +187,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     else:
         file_prefix = youtube_id
 
-    # 1. Piped API Stream (IP blokirovkadan 100% xoli)
+    # 1. Piped API Stream
     piped_file, title = await _download_via_piped(youtube_id, file_prefix)
     if piped_file:
         return piped_file, title, None
@@ -187,7 +197,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     if inv_file:
         return inv_file, title, None
 
-    # 3. Direct yt-dlp (TV embedded client orqali cookiesiz yuklash)
+    # 3. Direct yt-dlp (OAuth2)
     url = f"https://www.youtube.com/watch?v={youtube_id}"
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
@@ -210,7 +220,6 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
                     if not audio_streams:
                         continue
                     
-                    # Eng yuqori sifatli audio streamni olish
                     stream_url = audio_streams[0].get("url")
                     ext = audio_streams[0].get("format", "m4a").lower()
                     output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_piped.{ext}")
@@ -288,13 +297,14 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'format': 'ba/b',
         'outtmpl': outtmpl,
         'overwrites': True,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'user_agent': USER_AGENT,
+        'username': 'oauth2',
+        'password': '',
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded', 'creator'],
-                'skip': ['hls', 'dash']
+                'player_client': ['tv', 'android_vr'],
             }
         }
     }
@@ -334,7 +344,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
 # MEDIA / VIDEO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio.to_thread(_yt_dlp_download_video, url)
+    return await asyncio-to_thread(_yt_dlp_download_video, url)
 
 def _yt_dlp_download_video(url: str) -> dict:
     _ensure_cookies_file()
@@ -345,13 +355,15 @@ def _yt_dlp_download_video(url: str) -> dict:
         'format': 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': outtmpl,
         'overwrites': True,
-        'quiet': True,
-        'no_warnings': True,
+        'quiet': False,
+        'no_warnings': False,
         'max_filesize': 50 * 1024 * 1024,
         'user_agent': USER_AGENT,
+        'username': 'oauth2',
+        'password': '',
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embedded', 'creator'],
+                'player_client': ['tv', 'android_vr'],
             }
         }
     }
