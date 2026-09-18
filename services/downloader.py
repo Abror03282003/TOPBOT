@@ -63,6 +63,7 @@ def _ensure_cookies_file():
         logging.error(f"Cookies xatosi: {e}")
 
 def _has_cookies() -> bool:
+    _ensure_cookies_file()
     return os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0
 
 def format_duration(seconds) -> str:
@@ -92,11 +93,10 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             'skip_download': True,
             'ignoreerrors': True,
             'quiet': True,
-            'username': 'oauth2',
-            'password': '',
+            'user_agent': USER_AGENT,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tv', 'android_vr'],
+                    'player_client': ['ios', 'android', 'mweb'],
                 }
             }
         }
@@ -197,7 +197,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     if inv_file:
         return inv_file, title, None
 
-    # 3. Direct yt-dlp (OAuth2)
+    # 3. Direct yt-dlp
     url = f"https://www.youtube.com/watch?v={youtube_id}"
     file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
     if file_path:
@@ -290,7 +290,6 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
     return None, "Audio Track"
 
 def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]:
-    _ensure_cookies_file()
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.%(ext)s")
     
     opts = {
@@ -300,11 +299,9 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'quiet': False,
         'no_warnings': False,
         'user_agent': USER_AGENT,
-        'username': 'oauth2',
-        'password': '',
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv', 'android_vr'],
+                'player_client': ['ios', 'android', 'mweb'],
             }
         }
     }
@@ -344,10 +341,9 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
 # MEDIA / VIDEO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio-to_thread(_yt_dlp_download_video, url)
+    return await asyncio.to_thread(_yt_dlp_download_video, url)
 
 def _yt_dlp_download_video(url: str) -> dict:
-    _ensure_cookies_file()
     file_prefix = "video_" + str(abs(hash(url)))[-6:]
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_ytdlp.%(ext)s")
 
@@ -359,11 +355,9 @@ def _yt_dlp_download_video(url: str) -> dict:
         'no_warnings': False,
         'max_filesize': 50 * 1024 * 1024,
         'user_agent': USER_AGENT,
-        'username': 'oauth2',
-        'password': '',
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv', 'android_vr'],
+                'player_client': ['ios', 'android', 'mweb'],
             }
         }
     }
