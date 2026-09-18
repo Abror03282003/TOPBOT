@@ -60,12 +60,12 @@ CLIENT_ATTEMPTS = [
     (None, False),
 ]
 
-# Ishlayotgan yangi Invidious instansiyalari
+# Ishlayotgan yangi va barqaror Invidious instansiyalari
 INVIDIOUS_INSTANCES = [
     "https://invidious.nerdvpn.de",
-    "https://inv.tux.im",
-    "https://invidious.no-name-given.de",
-    "https://invidious.perennialte.ch"
+    "https://invidious.drgns.space",
+    "https://invidious.perennialte.ch",
+    "https://inv.nadeko.net"
 ]
 
 PROXY_URL = os.environ.get("PROXY_URL")
@@ -244,6 +244,7 @@ def _find_downloaded(file_prefix: str) -> str | None:
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
 
+    # 1. Keshni tekshirish
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -255,21 +256,21 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         url = f"https://www.youtube.com/watch?v={youtube_id}"
         file_prefix = youtube_id
 
-    # 1. yt-dlp (Asosiy)
-    file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
-    if file_path:
-        return file_path, title, None
-
-    # 2. Cobalt API (YT-DLP block bo'lganda birinchi API zaxirasi)
+    # 2. BIRINCHI URINISH: Cobalt API (IP bloki va bot-guard cheklovlarini chetlab o'tish uchun)
     cobalt_file = await _download_via_cobalt(url, file_prefix, is_audio=True)
     if cobalt_file:
         return cobalt_file, "Audio Track", None
 
-    # 3. Invidious (So'nggi zaxira)
+    # 3. IKKINCHI URINISH: Invidious (Yangi faol instansiyalar orqali)
     if not youtube_id.startswith("http"):
         file_path, title = await _download_via_invidious(youtube_id, file_prefix)
         if file_path:
             return file_path, title, None
+
+    # 4. UCHINCHI URINISH: yt-dlp (Zaxira)
+    file_path, title = await asyncio.to_thread(_yt_dlp_download_audio, url, file_prefix)
+    if file_path:
+        return file_path, title, None
 
     return None, "Audio Track", None
 
