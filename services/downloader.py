@@ -9,7 +9,7 @@ from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
 # ---------------------------------------------------------------------------
-# FFmpeg / FFprobe aniqlash
+# FFmpeg / FFprobe aniqlash va sozlash
 # ---------------------------------------------------------------------------
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
@@ -38,28 +38,35 @@ COOKIES_PATH = "cookies.txt"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
+# YouTube blokirovkasini kamaytirish uchun optimallashtirilgan parametrlar
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
     'ignoreerrors': False,
     'geo_bypass': True,
-    'retries': 3,
-    'socket_timeout': 15,
+    'retries': 5,
+    'fragment_retries': 5,
+    'skip_unavailable_fragments': True,
+    'sleep_interval': 1,
+    'max_sleep_interval': 3,
+    'socket_timeout': 20,
 }
 
 if FFMPEG_PATH:
     BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
 
+# Mijozlar (Clients) ro'yxati va ularga poyga berasiz
 CLIENT_ATTEMPTS = [
     (['tv', 'tv_embedded'], True),
+    (['android', 'mweb'], True),
     (['android_vr', 'web_creator'], True),
     (['ios', 'android'], False),
     (['mweb'], False),
     (None, False),
 ]
 
-# 2026-yilda faol va tekshirilgan ishchi public instansiyalar
+# Public instansiyalar
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
@@ -80,11 +87,17 @@ COBALT_INSTANCES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Cookies va YDL Sozlamalar Boshqaruvi
+# ---------------------------------------------------------------------------
 def _ensure_cookies_file():
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if not cookies_env:
         return
-    cleaned = cookies_env.strip()
+    
+    # Environment variable'dagi escape qilingan \n larni haqiqiy yangi qatorga o'tkazish
+    cleaned = cookies_env.replace("\\n", "\n").strip()
+    
     if os.path.exists(COOKIES_PATH):
         try:
             with open(COOKIES_PATH, "r", encoding="utf-8") as f:
@@ -94,7 +107,7 @@ def _ensure_cookies_file():
             pass
     try:
         with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-            f.write(cleaned)
+            f.write(cleaned + "\n")
     except Exception as e:
         logging.error(f"Cookies faylini yozishda xatolik: {e}")
 
@@ -107,15 +120,25 @@ def _build_opts(extra: dict, clients=None, use_cookies: bool = True) -> dict:
     _ensure_cookies_file()
     opts = {**BASE_YDL_OPTS, **extra}
     opts['user_agent'] = USER_AGENT
+
     if use_cookies and _has_cookies():
         opts['cookiefile'] = COOKIES_PATH
     else:
         opts.pop('cookiefile', None)
-        
+
     extractor_args = {}
     if clients:
         extractor_args['player_client'] = list(clients)
-    
+
+    # PO Token agar Railway o'zgaruvchilarida mavjud bo'lsa
+    po_token = os.environ.get("YOUTUBE_PO_TOKEN")
+    visitor_data = os.environ.get("YOUTUBE_VISITOR_DATA")
+    if po_token:
+        po_args = [f"web+{po_token}"]
+        if visitor_data:
+            po_args.append(visitor_data)
+        extractor_args['po_token'] = po_args
+
     if extractor_args:
         opts['extractor_args'] = {'youtube': extractor_args}
     else:
@@ -138,7 +161,7 @@ def format_duration(seconds) -> str:
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     search_query = query.strip()
 
-    # 1. Piped API orqali qidiruv (Musika bo'limi filtrida)
+    # 1. Piped API orqali qidiruv (Musika bo'limi)
     results = await _search_via_piped(search_query, limit, filter_type="music_songs")
     if results:
         return results
@@ -156,8 +179,8 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     # 4. yt-dlp zaxira
     def _yt_dlp_search():
         base = {
-            'extract_flat': True, 
-            'skip_download': True, 
+            'extract_flat': True,
+            'skip_download': True,
             'ignoreerrors': True
         }
         for clients, use_cookies in CLIENT_ATTEMPTS:
@@ -405,7 +428,7 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
         'overwrites': True,
     }
-    
+
     if FFMPEG_PATH:
         extra['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
@@ -420,8 +443,8 @@ def _yt_dlp_download_audio(url: str, file_prefix: str) -> tuple[str | None, str]
             try:
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(url, download=True)
-                if info and isinstance(info, dict):
-                    title = info.get('title', title)
+                    if info and isinstance(info, dict):
+                        title = info.get('title', title)
                 found = _find_downloaded(file_prefix)
                 if found:
                     logging.info(f"✅ yt-dlp orqali yuklandi ({clients}): {found}")
