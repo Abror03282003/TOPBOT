@@ -3,7 +3,7 @@ import glob
 import shutil
 import asyncio
 import logging
-import yt_dlp
+import aiohttp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
@@ -36,17 +36,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Dynamic cookie generation logic
-COOKIES_FILE = os.path.abspath("cookies.txt")
-cookies_env = os.environ.get("YOUTUBE_COOKIES")
-if cookies_env:
-    try:
-        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-            f.write(cookies_env)
-        logging.info("`YOUTUBE_COOKIES` env orqali cookies.txt yaratildi.")
-    except Exception as e:
-        logging.error(f"cookies.txt yaratishda xato: {e}")
-
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
@@ -58,45 +47,47 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# 2. QIDIRUV (YouTube Flat Search)
+# 2. QIDIRUV (Invidious Public API)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
     if not search_query:
         return []
-    return await asyncio.to_thread(_yt_flat_search, search_query, limit)
 
-def _yt_flat_search(query: str, limit: int) -> list[dict]:
-    opts = {
-        'extract_flat': True,
-        'skip_download': True,
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': USER_AGENT
-    }
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
+    headers = {"User-Agent": USER_AGENT}
+    # Barqaror Invidious va Piped qidiruv tugunlari
+    nodes = [
+        "https://inv.nadeko.net/api/v1/search",
+        "https://invidious.nerdvpn.de/api/v1/search",
+        "https://vyt.puzzle.is/api/v1/search"
+    ]
 
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            items = []
-            if res and 'entries' in res:
-                for entry in res['entries']:
-                    if entry and entry.get('id'):
-                        items.append({
-                            'id': entry.get('id'),
-                            'title': entry.get('title', 'Unknown Track'),
-                            'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader') or 'YouTube'
-                        })
-            return items
-    except Exception as e:
-        logging.error(f"Flat qidiruv xatosi: {e}")
-        return []
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for node in nodes:
+            try:
+                params = {"q": search_query, "type": "video"}
+                async with session.get(node, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = []
+                        for item in data[:limit]:
+                            v_id = item.get("videoId")
+                            if v_id:
+                                items.append({
+                                    'id': v_id,
+                                    'title': item.get('title', 'Unknown Track'),
+                                    'duration': format_duration(item.get('lengthSeconds', 0)),
+                                    'uploader': item.get('author', 'YouTube')
+                                })
+                        if items:
+                            return items
+            except Exception:
+                continue
+
+    return []
 
 # ---------------------------------------------------------------------------
-# 3. AUDIO YUKLASH (yt-dlp Direct)
+# 3. AUDIO YUKLASH (Cobalt API Engine)
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
@@ -113,47 +104,45 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     target_url = f"https://www.youtube.com/watch?v={v_id}"
     file_prefix = f"audio_{v_id}"
 
-    file_path, title = await asyncio.to_thread(_yt_download, target_url, file_prefix)
+    # Cobalt API orqali yuklash (Railway IP taqiqlarini aylanib o'tadi)
+    file_path, title = await _download_via_cobalt(target_url, file_prefix)
     if file_path:
         return file_path, title, None
 
     return None, "Audio Track", None
 
-def _yt_download(url: str, file_prefix: str) -> tuple[str | None, str]:
-    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
-
-    opts = {
-        'format': 'ba/ba*',
-        'outtmpl': outtmpl,
-        'overwrites': True,
-        'quiet': True,
-        'no_warnings': True,
-        'user_agent': USER_AGENT,
+async def _download_via_cobalt(url: str, file_prefix: str) -> tuple[str | None, str]:
+    payload = {
+        "url": url,
+        "downloadMode": "audio",
+        "audioFormat": "mp3"
     }
-
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-
-    if FFMPEG_PATH:
-        opts['ffmpeg_location'] = FFMPEG_PATH
-        opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT
+    }
+    out_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Audio Track') if info else 'Audio Track'
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    audio_url = data.get("url")
+                    title = data.get("filename", "Audio Track").replace(".mp3", "")
 
-            pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-            for f in glob.glob(pattern):
-                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
-                    logging.info(f"✅ Audio muvaffaqiyatli yuklandi: {f}")
-                    return f, title
+                    if audio_url:
+                        async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
+                            if file_resp.status == 200:
+                                with open(out_mp3, "wb") as f:
+                                    async for chunk in file_resp.content.iter_chunked(64 * 1024):
+                                        f.write(chunk)
+                                if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 10240:
+                                    logging.info(f"✅ Audio Cobalt orqali yuklandi: {out_mp3}")
+                                    return out_mp3, title
     except Exception as e:
-        logging.error(f"Audio yuklashda xatolik: {e}")
+        logging.error(f"Cobalt yuklash xatosi: {e}")
 
     return None, "Audio Track"
 
@@ -161,39 +150,27 @@ def _yt_download(url: str, file_prefix: str) -> tuple[str | None, str]:
 # 4. MEDIA YUKLASH (Video)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio.to_thread(_download_social_video, url.strip())
-
-def _download_social_video(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
-    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
+    out_mp4 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
 
-    opts = {
-        'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best',
-        'outtmpl': outtmpl,
-        'overwrites': True,
-        'quiet': True,
-        'no_warnings': True,
-        'max_filesize': 50 * 1024 * 1024,
-        'user_agent': USER_AGENT
-    }
-
-    if os.path.exists(COOKIES_FILE):
-        opts['cookiefile'] = COOKIES_FILE
-
-    if FFMPEG_PATH:
-        opts['ffmpeg_location'] = FFMPEG_PATH
+    payload = {"url": url}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
 
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Video') if info else 'Video'
-            video_id = info.get('id', file_prefix) if info else file_prefix
-
-            pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-            for f in glob.glob(pattern):
-                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
-                    return {"file_path": f, "title": title, "id": video_id}
+        async with aiohttp.ClientSession() as session:
+            async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    media_url = data.get("url")
+                    if media_url:
+                        async with session.get(media_url, timeout=aiohttp.ClientTimeout(total=90)) as file_resp:
+                            if file_resp.status == 200:
+                                with open(out_mp4, "wb") as f:
+                                    async for chunk in file_resp.content.iter_chunked(64 * 1024):
+                                        f.write(chunk)
+                                if os.path.exists(out_mp4) and os.path.getsize(out_mp4) > 10240:
+                                    return {"file_path": out_mp4, "title": "Video", "id": file_prefix}
     except Exception as e:
-        logging.error(f"Video yuklash xatosi: {e}")
+        logging.error(f"Media yuklash xatosi: {e}")
 
     return {"file_path": None, "title": "Video", "id": None}
