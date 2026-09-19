@@ -10,7 +10,7 @@ from database import get_cached_file, save_to_cache
 __all__ = ["search_tracks", "download_audio_by_id", "download_media"]
 
 # ---------------------------------------------------------------------------
-# FFmpeg va Cookies Sozlamalari
+# FFmpeg va Sozlamalar
 # ---------------------------------------------------------------------------
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
@@ -41,9 +41,11 @@ def _prepare_cookies():
     raw_cookies = os.environ.get("YOUTUBE_COOKIES", "")
     if raw_cookies:
         try:
+            # Multiline formatni to'g'rilash
             cleaned = raw_cookies.replace("\\n", "\n").strip()
             with open(COOKIES_FILE, "w", encoding="utf-8") as f:
                 f.write(cleaned + "\n")
+            logging.info("✅ Cookies fayli hosil qilindi va saqlandi.")
         except Exception as e:
             logging.error(f"Cookies fayliga yozishda xato: {e}")
 
@@ -55,14 +57,20 @@ def _get_base_opts() -> dict:
         'quiet': True,
         'no_warnings': True,
         'user_agent': USER_AGENT,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'logtostderr': False,
         'extractor_args': {
             'youtube': {
-                'player_client': ['ios', 'android', 'mweb'],
+                'player_client': ['tv', 'android_vr', 'mweb'],
+                'skip': ['hls', 'dash']
             }
         }
     }
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+    
+    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 10:
         opts['cookiefile'] = COOKIES_FILE
+        
     return opts
 
 def format_duration(seconds) -> str:
@@ -87,7 +95,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
 def _yt_search(query: str, limit: int) -> list[dict]:
     opts = _get_base_opts()
     opts.update({
-        'extract_flat': 'in_playlist',
+        'extract_flat': True,
         'skip_download': True,
     })
 
