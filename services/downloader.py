@@ -38,7 +38,7 @@ COOKIES_PATH = "cookies.txt"
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Yangilangan API instansiyalari
+# Yangilangan API instansiyalari (Eski va ishlamaydigan domenlar olib tashlandi)
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://api.piped.privacydev.net",
@@ -55,8 +55,8 @@ INVIDIOUS_INSTANCES = [
 
 COBALT_INSTANCES = [
     "https://api.cobalt.tools",
-    "https://co.wuk.sh",
-    "https://cobalt-api.kwiatek.xyz"
+    "https://cobalt.stream",
+    "https://cobalt-api.mha.fi"
 ]
 
 
@@ -210,7 +210,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     else:
         file_prefix = youtube_id
 
-    # 2. Cobalt API Stream (Eng tez va bloklanmaydigan usul)
+    # 2. Cobalt API Stream
     cobalt_file, title = await _download_via_cobalt(youtube_id, file_prefix)
     if cobalt_file:
         return cobalt_file, title, None
@@ -257,8 +257,9 @@ async def _download_via_cobalt(video_id_or_url: str, file_prefix: str) -> tuple[
     async with aiohttp.ClientSession(headers=headers) as session:
         for instance in COBALT_INSTANCES:
             try:
-                async with session.post(f"{instance}/", json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                    if resp.status == 200:
+                target_url = f"{instance}/api/json" if "cobalt.tools" in instance else f"{instance}/"
+                async with session.post(target_url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status in (200, 201):
                         data = await resp.json()
                         stream_url = data.get("url")
                         filename = data.get("filename", "Audio Track")
