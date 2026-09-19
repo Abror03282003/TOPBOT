@@ -98,11 +98,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             'skip_download': True,
             'ignoreerrors': True,
             'quiet': True,
-            'user_agent': USER_AGENT,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios', 'mweb'],
-                }
+           
             }
         }
         if _has_cookies():
