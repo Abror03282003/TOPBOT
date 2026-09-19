@@ -3,7 +3,6 @@ import glob
 import shutil
 import asyncio
 import logging
-import aiohttp
 import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
@@ -37,20 +36,16 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Ishchi va yangilangan Piped API instansiyalari
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://pipedapi.r34.app",
-    "https://pipedapi.palvelintalo.fi",
-    "https://pipedapi.drgns.space"
-]
-
-# Ishchi va yangilangan Invidious API instansiyalari
-INVIDIOUS_INSTANCES = [
-    "https://inv.nadeko.net",
-    "https://invidious.nerdvpn.de",
-    "https://invidious.drgns.space"
-]
+# Dynamic cookie generation logic
+COOKIES_FILE = os.path.abspath("cookies.txt")
+cookies_env = os.environ.get("YOUTUBE_COOKIES")
+if cookies_env:
+    try:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(cookies_env)
+        logging.info("`YOUTUBE_COOKIES` env orqali cookies.txt yaratildi.")
+    except Exception as e:
+        logging.error(f"cookies.txt yaratishda xato: {e}")
 
 def format_duration(seconds) -> str:
     if not seconds:
@@ -63,80 +58,13 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# 2. QIDIRUV (Piped API / Invidious / Flat)
+# 2. QIDIRUV (YouTube Flat Search)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
     if not search_query:
         return []
-
-    # 1. Piped API
-    piped_res = await _piped_search(search_query, limit)
-    if piped_res:
-        return piped_res
-
-    # 2. Invidious API
-    inv_res = await _invidious_search(search_query, limit)
-    if inv_res:
-        return inv_res
-
-    # 3. Zaxira: yt-dlp flat search
     return await asyncio.to_thread(_yt_flat_search, search_query, limit)
-
-async def _piped_search(query: str, limit: int) -> list[dict]:
-    headers = {"User-Agent": USER_AGENT}
-    timeout = aiohttp.ClientTimeout(total=4)
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        for api_base in PIPED_INSTANCES:
-            try:
-                url = f"{api_base}/search"
-                params = {"q": query, "filter": "music_songs"}
-                async with session.get(url, params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        items = []
-                        for item in data.get("items", [])[:limit]:
-                            url_path = item.get("url", "")
-                            v_id = url_path.split("v=")[-1] if "v=" in url_path else url_path.replace("/watch?v=", "")
-                            if v_id:
-                                items.append({
-                                    'id': v_id,
-                                    'title': item.get('title', 'Unknown Track'),
-                                    'duration': format_duration(item.get('duration', 0)),
-                                    'uploader': item.get('uploaderName', 'YouTube')
-                                })
-                        if items:
-                            return items
-            except Exception:
-                continue
-    return []
-
-async def _invidious_search(query: str, limit: int) -> list[dict]:
-    headers = {"User-Agent": USER_AGENT}
-    timeout = aiohttp.ClientTimeout(total=4)
-    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-        for api_base in INVIDIOUS_INSTANCES:
-            try:
-                url = f"{api_base}/api/v1/search"
-                params = {"q": query, "type": "video"}
-                async with session.get(url, params=params) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        items = []
-                        for item in data[:limit]:
-                            v_id = item.get("videoId")
-                            if v_id:
-                                items.append({
-                                    'id': v_id,
-                                    'title': item.get('title', 'Unknown Track'),
-                                    'duration': format_duration(item.get('lengthSeconds', 0)),
-                                    'uploader': item.get('author', 'YouTube')
-                                })
-                        if items:
-                            return items
-            except Exception:
-                continue
-    return []
 
 def _yt_flat_search(query: str, limit: int) -> list[dict]:
     opts = {
@@ -146,6 +74,9 @@ def _yt_flat_search(query: str, limit: int) -> list[dict]:
         'no_warnings': True,
         'user_agent': USER_AGENT
     }
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
+
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -165,7 +96,7 @@ def _yt_flat_search(query: str, limit: int) -> list[dict]:
         return []
 
 # ---------------------------------------------------------------------------
-# 3. AUDIO YUKLASH (Piped Stream Direct Download)
+# 3. AUDIO YUKLASH (yt-dlp Direct)
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
@@ -179,115 +110,55 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     else:
         v_id = track_id
 
+    target_url = f"https://www.youtube.com/watch?v={v_id}"
     file_prefix = f"audio_{v_id}"
 
-    # 1. Piped API orqali
-    file_path, title = await _download_via_piped(v_id, file_prefix)
-    if file_path:
-        return file_path, title, None
-
-    # 2. Invidious API orqali
-    file_path, title = await _download_via_invidious(v_id, file_prefix)
+    file_path, title = await asyncio.to_thread(_yt_download, target_url, file_prefix)
     if file_path:
         return file_path, title, None
 
     return None, "Audio Track", None
 
-async def _download_via_piped(v_id: str, file_prefix: str) -> tuple[str | None, str]:
-    headers = {"User-Agent": USER_AGENT}
-    out_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+def _yt_download(url: str, file_prefix: str) -> tuple[str | None, str]:
+    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
 
-    for api_base in PIPED_INSTANCES:
-        try:
-            url = f"{api_base}/streams/{v_id}"
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        title = data.get("title", "Audio Track")
-                        audio_streams = data.get("audioStreams", [])
+    opts = {
+        'format': 'ba/ba*',
+        'outtmpl': outtmpl,
+        'overwrites': True,
+        'quiet': True,
+        'no_warnings': True,
+        'user_agent': USER_AGENT,
+    }
 
-                        if audio_streams:
-                            best_stream = max(audio_streams, key=lambda x: x.get("bitrate", 0))
-                            stream_url = best_stream.get("url")
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
 
-                            if stream_url:
-                                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
-                                    if file_resp.status == 200:
-                                        raw_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.tmp")
-                                        with open(raw_file, "wb") as f:
-                                            async for chunk in file_resp.content.iter_chunked(64 * 1024):
-                                                f.write(chunk)
+    if FFMPEG_PATH:
+        opts['ffmpeg_location'] = FFMPEG_PATH
+        opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
 
-                                        if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10240:
-                                            if FFMPEG_PATH:
-                                                try:
-                                                    sound = AudioSegment.from_file(raw_file)
-                                                    sound.export(out_mp3, format="mp3", bitrate="192k")
-                                                    if os.path.exists(raw_file):
-                                                        os.remove(raw_file)
-                                                except Exception:
-                                                    os.rename(raw_file, out_mp3)
-                                            else:
-                                                os.rename(raw_file, out_mp3)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Audio Track') if info else 'Audio Track'
 
-                                            if os.path.exists(out_mp3):
-                                                logging.info(f"✅ Audio Piped orqali yuklandi: {out_mp3}")
-                                                return out_mp3, title
-        except Exception as e:
-            logging.warning(f"Piped API ({api_base}) xatosi: {e}")
-            continue
-
-    return None, "Audio Track"
-
-async def _download_via_invidious(v_id: str, file_prefix: str) -> tuple[str | None, str]:
-    headers = {"User-Agent": USER_AGENT}
-    out_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
-
-    for api_base in INVIDIOUS_INSTANCES:
-        try:
-            url = f"{api_base}/api/v1/videos/{v_id}"
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        title = data.get("title", "Audio Track")
-                        adaptive = data.get("adaptiveFormats", [])
-                        audio_streams = [f for f in adaptive if "audio" in f.get("type", "")]
-
-                        if audio_streams:
-                            stream_url = audio_streams[0].get("url")
-                            if stream_url:
-                                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
-                                    if file_resp.status == 200:
-                                        raw_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.tmp")
-                                        with open(raw_file, "wb") as f:
-                                            async for chunk in file_resp.content.iter_chunked(64 * 1024):
-                                                f.write(chunk)
-
-                                        if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10240:
-                                            if FFMPEG_PATH:
-                                                try:
-                                                    sound = AudioSegment.from_file(raw_file)
-                                                    sound.export(out_mp3, format="mp3", bitrate="192k")
-                                                    if os.path.exists(raw_file):
-                                                        os.remove(raw_file)
-                                                except Exception:
-                                                    os.rename(raw_file, out_mp3)
-                                            else:
-                                                os.rename(raw_file, out_mp3)
-
-                                            if os.path.exists(out_mp3):
-                                                logging.info(f"✅ Audio Invidious orqali yuklandi: {out_mp3}")
-                                                return out_mp3, title
-        except Exception as e:
-            logging.warning(f"Invidious API ({api_base}) xatosi: {e}")
-            continue
+            pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
+            for f in glob.glob(pattern):
+                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                    logging.info(f"✅ Audio muvaffaqiyatli yuklandi: {f}")
+                    return f, title
+    except Exception as e:
+        logging.error(f"Audio yuklashda xatolik: {e}")
 
     return None, "Audio Track"
 
 # ---------------------------------------------------------------------------
-# 4. MEDIA YUKLASH (Tuzatilgan asyncio syntax)
+# 4. MEDIA YUKLASH (Video)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     return await asyncio.to_thread(_download_social_video, url.strip())
@@ -305,6 +176,9 @@ def _download_social_video(url: str) -> dict:
         'max_filesize': 50 * 1024 * 1024,
         'user_agent': USER_AGENT
     }
+
+    if os.path.exists(COOKIES_FILE):
+        opts['cookiefile'] = COOKIES_FILE
 
     if FFMPEG_PATH:
         opts['ffmpeg_location'] = FFMPEG_PATH
