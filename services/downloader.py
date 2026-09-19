@@ -98,10 +98,9 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             'skip_download': True,
             'ignoreerrors': True,
             'quiet': True,
-           
+           }
         if _has_cookies():
             opts['cookiefile'] = COOKIES_PATH
- }
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{search_query}", download=False)
