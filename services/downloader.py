@@ -63,6 +63,13 @@ def _get_ytdl_base_opts():
         'user_agent': USER_AGENT,
         'nocheckcertificate': True,
         'geo_bypass': True,
+        # Bot taqiqlarini aylanib o'tish uchun Android/iOS klientlarini ishlatamiz
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb'],
+                'skip': ['hls', 'dash']
+            }
+        },
         'http_headers': {
             'User-Agent': USER_AGENT,
             'Accept-Language': 'en-US,en;q=0.9,uz;q=0.8',
@@ -82,7 +89,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     return await asyncio.to_thread(_search_tracks_sync, search_query, limit)
 
 def _search_tracks_sync(query: str, limit: int) -> list[dict]:
-    # 1-Urinish: YouTube Flat Search
+    # 1-Urinish: YouTube Flat Search (Android client bilan)
     opts = _get_ytdl_base_opts()
     opts.update({
         'extract_flat': True,
@@ -105,9 +112,9 @@ def _search_tracks_sync(query: str, limit: int) -> list[dict]:
             if items:
                 return items
     except Exception as e:
-        logging.warning(f"YouTube qidiruvi muvaffaqiyatsiz, SoundCloud sinab ko'rilmoqda: {e}")
+        logging.warning(f"YouTube qidiruvi bloklandi, SoundCloud sinab ko'rilmoqda: {e}")
 
-    # 2-Urinish: SoundCloud Search (YouTube IP bloklanganda)
+    # 2-Urinish: SoundCloud Search (YouTube IP umuman javob bermasa)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
@@ -128,7 +135,7 @@ def _search_tracks_sync(query: str, limit: int) -> list[dict]:
     return []
 
 # ---------------------------------------------------------------------------
-# 3. AUDIO YUKLASH (Direct Direct Extraction)
+# 3. AUDIO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
@@ -187,7 +194,7 @@ def _download_audio_sync(url: str, file_prefix: str) -> tuple[str | None, str]:
 # 4. MEDIA YUKLASH (Video)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio.to_thread(_download_social_video, url.strip())
+    return await asyncio-to_thread(_download_social_video, url.strip()) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download_social_video, url.strip())
 
 def _download_social_video(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
