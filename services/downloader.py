@@ -11,24 +11,7 @@ from database import get_cached_file, save_to_cache
 __all__ = ["search_tracks", "download_audio_by_id", "download_media"]
 
 # ---------------------------------------------------------------------------
-# 1. YouTube Cookies va Environment Sozlamasi
-# ---------------------------------------------------------------------------
-COOKIES_FILE = os.path.abspath("yt_cookies.txt")
-
-def _prepare_cookies():
-    raw_cookies = os.environ.get("YOUTUBE_COOKIES", "")
-    if raw_cookies:
-        try:
-            cleaned = raw_cookies.replace("\\n", "\n").strip()
-            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-                f.write(cleaned + "\n")
-        except Exception as e:
-            logging.error(f"Cookies yozishda xato: {e}")
-
-_prepare_cookies()
-
-# ---------------------------------------------------------------------------
-# 2. FFmpeg Sozlamalari
+# 1. FFmpeg va Muhit Sozlamalari
 # ---------------------------------------------------------------------------
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
@@ -54,9 +37,15 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# ---------------------------------------------------------------------------
-# 3. Yordamchi Funksiyalar
-# ---------------------------------------------------------------------------
+# Ishlaydigan Piped API misollari (YouTube blokirovkasidan xoli)
+PIPED_APIS = [
+    "https://pipedapi.kavin.rocks",
+    "https://pipedapi.mha.fi",
+    "https://api.piped.yt",
+    "https://pipedapi.drgns.space",
+    "https://pipedapi.adminforge.de"
+]
+
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
@@ -68,32 +57,56 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# 4. QIDIRUV
+# 2. QIDIRUV (Piped API orqali YouTube bazasidan topadi)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
     if not search_query:
         return []
-    return await asyncio.to_thread(_yt_search, search_query, limit)
+    
+    # 1-darajali: Piped API orqali tezkor va blokirovkasiz qidiruv
+    results = await _search_piped(search_query, limit)
+    if results:
+        logging.info(f"✅ Qidiruv muvaffaqiyatli (Piped): '{search_query}' bo'yicha {len(results)} ta natija.")
+        return results
 
-def _yt_search(query: str, limit: int) -> list[dict]:
-    _prepare_cookies()
+    # 2-darajali: yt-dlp flat search (zaxira)
+    return await asyncio.to_thread(_yt_flat_search, search_query, limit)
+
+async def _search_piped(query: str, limit: int) -> list[dict]:
+    headers = {"User-Agent": USER_AGENT}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for api in PIPED_APIS:
+            try:
+                url = f"{api}/search"
+                params = {"q": query, "filter": "music_songs"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = []
+                        for entry in data.get("items", [])[:limit]:
+                            v_id = entry.get("url", "").replace("/watch?v=", "")
+                            if v_id:
+                                items.append({
+                                    'id': v_id,
+                                    'title': entry.get("title", "Unknown"),
+                                    'duration': format_duration(entry.get("duration", 0)),
+                                    'uploader': entry.get("uploaderName", "Music")
+                                })
+                        if items:
+                            return items
+            except Exception:
+                continue
+    return []
+
+def _yt_flat_search(query: str, limit: int) -> list[dict]:
     opts = {
+        'extract_flat': True,
+        'skip_download': True,
         'quiet': True,
         'no_warnings': True,
-        'extract_flat': 'in_playlist',
-        'skip_download': True,
-        'user_agent': USER_AGENT,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'mweb'],
-                'skip': ['hls', 'dash']
-            }
-        }
+        'user_agent': USER_AGENT
     }
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
-        opts['cookiefile'] = COOKIES_FILE
-
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -105,142 +118,94 @@ def _yt_search(query: str, limit: int) -> list[dict]:
                             'id': entry.get('id'),
                             'title': entry.get('title', 'Unknown Track'),
                             'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader') or entry.get('channel') or 'YouTube'
+                            'uploader': entry.get('uploader') or 'Music'
                         })
-            if items:
-                logging.info(f"✅ Qidiruv muvaffaqiyatli: '{query}' bo'yicha {len(items)} ta natija topildi.")
             return items
-    except Exception as e:
-        logging.error(f"Qidiruv xatoligi: {e}")
+    except Exception:
         return []
 
 # ---------------------------------------------------------------------------
-# 5. AUDIO YUKLASH (Fallback zanjiri bilan)
+# 3. AUDIO YUKLASH (IP Blokirovkasiz Piped Stream orqali)
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
 
+    # Keshda bor-yo'qligini tekshirish
     cached_file_id = await get_cached_file(track_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
 
     if track_id.startswith("http"):
-        file_prefix = "url_" + str(abs(hash(track_id)))[-6:]
-        url = track_id
+        if "v=" in track_id:
+            v_id = track_id.split("v=")[1].split("&")[0]
+        else:
+            v_id = track_id.split("/")[-1]
     else:
-        file_prefix = track_id
-        url = f"https://www.youtube.com/watch?v={track_id}"
+        v_id = track_id
 
-    # 1. yt-dlp orqali turli player_client-lar bilan urinib ko'rish
-    file_path, title = await asyncio.to_thread(_yt_download_audio, track_id, file_prefix)
+    file_prefix = f"audio_{v_id}"
+
+    # Audioni yuklab olish
+    file_path, title = await _download_piped_stream(v_id, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 2. Agar yt-dlp bloklansa, Cobalt API orqali yuklash
-    cobalt_file = await _download_via_cobalt(url, file_prefix)
-    if cobalt_file:
-        return cobalt_file, "Audio Track", None
-
     return None, "Audio Track", None
 
-def _yt_download_audio(video_id_or_url: str, file_prefix: str) -> tuple[str | None, str]:
-    _prepare_cookies()
-    url = f"https://www.youtube.com/watch?v={video_id_or_url}" if not video_id_or_url.startswith("http") else video_id_or_url
-    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
+async def _download_piped_stream(video_id: str, file_prefix: str) -> tuple[str | None, str]:
+    headers = {"User-Agent": USER_AGENT}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for api in PIPED_APIS:
+            try:
+                url = f"{api}/streams/{video_id}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                    title = data.get("title", "Audio Track")
+                    audio_streams = data.get("audioStreams", [])
+                    
+                    if not audio_streams:
+                        continue
 
-    client_sets = [
-        ['ios', 'android'],
-        ['mweb', 'web_embedded'],
-        ['tv_embedded', 'android_vr']
-    ]
+                    # Eng sifatli oqimni tanlaymiz
+                    audio_streams.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                    stream_url = audio_streams[0].get("url")
+                    mime = audio_streams[0].get("mimeType", "")
+                    ext = "m4a" if "m4a" in mime or "mp4" in mime else "webm"
+                    
+                    raw_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.{ext}")
+                    mp3_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    for clients in client_sets:
-        opts = {
-            'format': 'ba/ba*/m4a/best',
-            'outtmpl': outtmpl,
-            'overwrites': True,
-            'quiet': True,
-            'no_warnings': True,
-            'user_agent': USER_AGENT,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': clients,
-                    'skip': ['hls', 'dash']
-                }
-            }
-        }
-
-        if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
-            opts['cookiefile'] = COOKIES_FILE
-
-        if FFMPEG_PATH:
-            opts['ffmpeg_location'] = FFMPEG_PATH
-            opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                title = info.get('title', 'Audio Track') if info else 'Audio Track'
-
-                pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-                for f in glob.glob(pattern):
-                    if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
-                        logging.info(f"✅ Audio yuklandi ({clients}): {f}")
-                        return f, title
-        except Exception as e:
-            logging.warning(f"yt-dlp client xatosi ({clients}): {e}")
-            continue
-
+                    # Faylni yuklab olish
+                    async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=30)) as s_resp:
+                        if s_resp.status == 200:
+                            with open(raw_path, "wb") as f:
+                                async for chunk in s_resp.content.iter_chunked(64 * 1024):
+                                    f.write(chunk)
+                            
+                            if os.path.exists(raw_path) and os.path.getsize(raw_path) > 10240:
+                                if FFMPEG_PATH:
+                                    sound = AudioSegment.from_file(raw_path)
+                                    sound.export(mp3_path, format="mp3", bitrate="192k")
+                                    if os.path.exists(raw_path):
+                                        os.remove(raw_path)
+                                    logging.info(f"✅ Audio muvaffaqiyatli yuklandi: {mp3_path}")
+                                    return mp3_path, title
+                                else:
+                                    return raw_path, title
+            except Exception as e:
+                logging.warning(f"Piped server ({api}) xatosi: {e}")
+                continue
     return None, "Audio Track"
 
-async def _download_via_cobalt(url: str, file_prefix: str) -> str | None:
-    output_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_cobalt.mp3")
-    payload = {
-        "url": url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3"
-    }
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT
-    }
-
-    instances = ["https://api.cobalt.tools", "https://cobalt.streamrip.net"]
-
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for instance in instances:
-            try:
-                async with session.post(f"{instance}/", json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        media_link = data.get("url")
-                        if media_link:
-                            async with session.get(media_link, timeout=aiohttp.ClientTimeout(total=40)) as file_resp:
-                                if file_resp.status == 200:
-                                    with open(output_path, "wb") as f:
-                                        async for chunk in file_resp.content.iter_chunked(64 * 1024):
-                                            f.write(chunk)
-                                    if os.path.exists(output_path) and os.path.getsize(output_path) > 10240:
-                                        logging.info("✅ Cobalt API orqali audio yuklandi.")
-                                        return output_path
-            except Exception as e:
-                logging.warning(f"Cobalt xatosi: {e}")
-                continue
-    return None
-
 # ---------------------------------------------------------------------------
-# 6. VIDEO YUKLASH (Instagram, TikTok, YouTube Video va h.k)
+# 4. IJTIMOIY TARMOQLARDAN VIDEO YUKLASH (Instagram, TikTok, YouTube va h.k)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     return await asyncio.to_thread(_download_social_video, url.strip())
 
 def _download_social_video(url: str) -> dict:
-    _prepare_cookies()
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
 
@@ -251,16 +216,8 @@ def _download_social_video(url: str) -> dict:
         'quiet': True,
         'no_warnings': True,
         'max_filesize': 50 * 1024 * 1024,
-        'user_agent': USER_AGENT,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'mweb']
-            }
-        }
+        'user_agent': USER_AGENT
     }
-
-    if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
-        opts['cookiefile'] = COOKIES_FILE
 
     if FFMPEG_PATH:
         opts['ffmpeg_location'] = FFMPEG_PATH
