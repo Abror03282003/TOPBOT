@@ -37,12 +37,19 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Piped API namunalari (ochiq proksi serverlar)
+# Ishchi va yangilangan Piped API instansiyalari
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://api.piped.yt",
-    "https://pipedapi.mha.fi",
-    "https://piped-api.garudalinux.org"
+    "https://pipedapi.r34.app",
+    "https://pipedapi.palvelintalo.fi",
+    "https://pipedapi.drgns.space"
+]
+
+# Ishchi va yangilangan Invidious API instansiyalari
+INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.drgns.space"
 ]
 
 def format_duration(seconds) -> str:
@@ -56,28 +63,35 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# 2. QIDIRUV (Piped API / Flat Search)
+# 2. QIDIRUV (Piped API / Invidious / Flat)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
     if not search_query:
         return []
 
-    # 1. Piped API orqali qidirish (YouTube ma'lumotlarini tez va taqiqsiz beradi)
+    # 1. Piped API
     piped_res = await _piped_search(search_query, limit)
     if piped_res:
         return piped_res
 
-    # 2. Zaxira: yt-dlp flat search
+    # 2. Invidious API
+    inv_res = await _invidious_search(search_query, limit)
+    if inv_res:
+        return inv_res
+
+    # 3. Zaxira: yt-dlp flat search
     return await asyncio.to_thread(_yt_flat_search, search_query, limit)
 
 async def _piped_search(query: str, limit: int) -> list[dict]:
     headers = {"User-Agent": USER_AGENT}
-    for api_base in PIPED_INSTANCES:
-        try:
-            url = f"{api_base}/search?q={query}&filter=music_songs"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+    timeout = aiohttp.ClientTimeout(total=4)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+        for api_base in PIPED_INSTANCES:
+            try:
+                url = f"{api_base}/search"
+                params = {"q": query, "filter": "music_songs"}
+                async with session.get(url, params=params) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         items = []
@@ -93,8 +107,35 @@ async def _piped_search(query: str, limit: int) -> list[dict]:
                                 })
                         if items:
                             return items
-        except Exception:
-            continue
+            except Exception:
+                continue
+    return []
+
+async def _invidious_search(query: str, limit: int) -> list[dict]:
+    headers = {"User-Agent": USER_AGENT}
+    timeout = aiohttp.ClientTimeout(total=4)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+        for api_base in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{api_base}/api/v1/search"
+                params = {"q": query, "type": "video"}
+                async with session.get(url, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = []
+                        for item in data[:limit]:
+                            v_id = item.get("videoId")
+                            if v_id:
+                                items.append({
+                                    'id': v_id,
+                                    'title': item.get('title', 'Unknown Track'),
+                                    'duration': format_duration(item.get('lengthSeconds', 0)),
+                                    'uploader': item.get('author', 'YouTube')
+                                })
+                        if items:
+                            return items
+            except Exception:
+                continue
     return []
 
 def _yt_flat_search(query: str, limit: int) -> list[dict]:
@@ -140,13 +181,13 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
     file_prefix = f"audio_{v_id}"
 
-    # 1. Piped API orqali audio oqimini to'g'ridan-to'g'ri olish
+    # 1. Piped API orqali
     file_path, title = await _download_via_piped(v_id, file_prefix)
     if file_path:
         return file_path, title, None
 
-    # 2. Zaxira: Cobalt API
-    file_path, title = await _download_via_cobalt(f"https://www.youtube.com/watch?v={v_id}", file_prefix)
+    # 2. Invidious API orqali
+    file_path, title = await _download_via_invidious(v_id, file_prefix)
     if file_path:
         return file_path, title, None
 
@@ -159,39 +200,39 @@ async def _download_via_piped(v_id: str, file_prefix: str) -> tuple[str | None, 
     for api_base in PIPED_INSTANCES:
         try:
             url = f"{api_base}/streams/{v_id}"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=7)) as resp:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         title = data.get("title", "Audio Track")
                         audio_streams = data.get("audioStreams", [])
 
                         if audio_streams:
-                            # Eng sifatli audio oqimini tanlash
                             best_stream = max(audio_streams, key=lambda x: x.get("bitrate", 0))
                             stream_url = best_stream.get("url")
 
                             if stream_url:
-                                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=90)) as file_resp:
+                                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
                                     if file_resp.status == 200:
                                         raw_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.tmp")
                                         with open(raw_file, "wb") as f:
                                             async for chunk in file_resp.content.iter_chunked(64 * 1024):
                                                 f.write(chunk)
 
-                                        # FFmpeg orqali toza MP3 ga o'tkazish
                                         if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10240:
                                             if FFMPEG_PATH:
-                                                cmd = f'"{FFMPEG_PATH}" -y -i "{raw_file}" -vn -ar 44100 -ac 2 -b:a 192k "{out_mp3}"'
-                                                proc = await asyncio.create_subprocess_shell(cmd)
-                                                await proc.communicate()
-                                                if os.path.exists(raw_file):
-                                                    os.remove(raw_file)
+                                                try:
+                                                    sound = AudioSegment.from_file(raw_file)
+                                                    sound.export(out_mp3, format="mp3", bitrate="192k")
+                                                    if os.path.exists(raw_file):
+                                                        os.remove(raw_file)
+                                                except Exception:
+                                                    os.rename(raw_file, out_mp3)
                                             else:
                                                 os.rename(raw_file, out_mp3)
 
                                             if os.path.exists(out_mp3):
-                                                logging.info(f"✅ Audio Piped orqali muvaffaqiyatli yuklandi: {out_mp3}")
+                                                logging.info(f"✅ Audio Piped orqali yuklandi: {out_mp3}")
                                                 return out_mp3, title
         except Exception as e:
             logging.warning(f"Piped API ({api_base}) xatosi: {e}")
@@ -199,45 +240,57 @@ async def _download_via_piped(v_id: str, file_prefix: str) -> tuple[str | None, 
 
     return None, "Audio Track"
 
-async def _download_via_cobalt(url: str, file_prefix: str) -> tuple[str | None, str]:
-    payload = {
-        "url": url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3"
-    }
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": USER_AGENT
-    }
+async def _download_via_invidious(v_id: str, file_prefix: str) -> tuple[str | None, str]:
+    headers = {"User-Agent": USER_AGENT}
     out_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    audio_url = data.get("url")
-                    title = data.get("filename", "Audio Track").replace(".mp3", "")
+    for api_base in INVIDIOUS_INSTANCES:
+        try:
+            url = f"{api_base}/api/v1/videos/{v_id}"
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        title = data.get("title", "Audio Track")
+                        adaptive = data.get("adaptiveFormats", [])
+                        audio_streams = [f for f in adaptive if "audio" in f.get("type", "")]
 
-                    if audio_url:
-                        async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
-                            if file_resp.status == 200:
-                                with open(out_mp3, "wb") as f:
-                                    async for chunk in file_resp.content.iter_chunked(64 * 1024):
-                                        f.write(chunk)
-                                if os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 10240:
-                                    return out_mp3, title
-    except Exception as e:
-        logging.warning(f"Cobalt API xatosi: {e}")
+                        if audio_streams:
+                            stream_url = audio_streams[0].get("url")
+                            if stream_url:
+                                async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
+                                    if file_resp.status == 200:
+                                        raw_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_inv.tmp")
+                                        with open(raw_file, "wb") as f:
+                                            async for chunk in file_resp.content.iter_chunked(64 * 1024):
+                                                f.write(chunk)
+
+                                        if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10240:
+                                            if FFMPEG_PATH:
+                                                try:
+                                                    sound = AudioSegment.from_file(raw_file)
+                                                    sound.export(out_mp3, format="mp3", bitrate="192k")
+                                                    if os.path.exists(raw_file):
+                                                        os.remove(raw_file)
+                                                except Exception:
+                                                    os.rename(raw_file, out_mp3)
+                                            else:
+                                                os.rename(raw_file, out_mp3)
+
+                                            if os.path.exists(out_mp3):
+                                                logging.info(f"✅ Audio Invidious orqali yuklandi: {out_mp3}")
+                                                return out_mp3, title
+        except Exception as e:
+            logging.warning(f"Invidious API ({api_base}) xatosi: {e}")
+            continue
 
     return None, "Audio Track"
 
 # ---------------------------------------------------------------------------
-# 4. MEDIA YUKLASH (Instagram/TikTok/YouTube Video)
+# 4. MEDIA YUKLASH (Tuzatilgan asyncio syntax)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio-to_thread(_download_social_video, url.strip()) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download_social_video, url.strip())
+    return await asyncio.to_thread(_download_social_video, url.strip())
 
 def _download_social_video(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
