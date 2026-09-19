@@ -10,13 +10,17 @@ from database import get_cached_file, save_to_cache
 __all__ = ["search_tracks", "download_audio_by_id", "download_media"]
 
 # ---------------------------------------------------------------------------
-# 1. YouTube Cookies va Dynamic Environment
+# 1. YouTube Cookies va Environment Sozlamasi
 # ---------------------------------------------------------------------------
 COOKIES_FILE = os.path.abspath("yt_cookies.txt")
 raw_cookies = os.environ.get("YOUTUBE_COOKIES", "")
 if raw_cookies:
-    with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-        f.write(raw_cookies)
+    try:
+        cleaned = raw_cookies.replace("\\n", "\n").strip()
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(cleaned + "\n")
+    except Exception as e:
+        logging.error(f"Cookies yozishda xato: {e}")
 
 # ---------------------------------------------------------------------------
 # 2. FFmpeg Sozlamalari
@@ -49,23 +53,20 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 # 3. Blokirovkasiz yt-dlp Baza Boshqaruvi
 # ---------------------------------------------------------------------------
 def get_base_yt_opts() -> dict:
-    """YouTube va boshqa tarmoqlar blokirovkasidan o'tuvchi asosiy sozlamalar"""
     opts = {
         'quiet': True,
         'no_warnings': True,
         'user_agent': USER_AGENT,
-        # YouTube blokirovkalaridan qochish uchun maxsus ekstraktor sozlamalari:
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'web'],
+                'player_client': ['android', 'ios', 'mweb', 'web'],
                 'skip': ['hls', 'dash']
             }
         },
         'nocheckcertificate': True,
-        'ignoreerrors': False,
+        'ignoreerrors': True,
     }
     
-    # Agar Railway yoki muhitda Cookies o'rnatilgan bo'lsa, ulash
     if os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
         opts['cookiefile'] = COOKIES_FILE
 
@@ -85,10 +86,13 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# 4. QIDIRUV (YouTube Musiqa va Videolarni Izlash)
+# 4. QIDIRUV (YouTube-dan Qidirish)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
-    return await asyncio.to_thread(_yt_search, query.strip(), limit)
+    search_query = query.strip()
+    if not search_query:
+        return []
+    return await asyncio.to_thread(_yt_search, search_query, limit)
 
 def _yt_search(query: str, limit: int) -> list[dict]:
     opts = get_base_yt_opts()
@@ -110,18 +114,19 @@ def _yt_search(query: str, limit: int) -> list[dict]:
                             'duration': format_duration(entry.get('duration', 0)),
                             'uploader': entry.get('uploader') or entry.get('channel') or 'YouTube'
                         })
+            if items:
+                logging.info(f"✅ Qidiruv muvaffaqiyatli: '{query}' bo'yicha {len(items)} ta natija topildi.")
             return items
     except Exception as e:
-        logging.error(f"Qidiruvda xatolik yuz berdi: {e}")
+        logging.error(f"Qidiruv xatoligi: {e}")
         return []
 
 # ---------------------------------------------------------------------------
-# 5. AUDIO YUKLASH (YouTube Audio / MP3)
+# 5. AUDIO YUKLASH (MP3 Formatida)
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
 
-    # Keshni tekshirish
     cached_file_id = await get_cached_file(track_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -146,12 +151,14 @@ def _yt_download_audio(video_id_or_url: str, file_prefix: str) -> tuple[str | No
         'format': 'ba/ba*/m4a/best',
         'outtmpl': outtmpl,
         'overwrites': True,
-        'postprocessors': [{
+    })
+
+    if FFMPEG_PATH:
+        opts['postprocessors'] = [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '192',
-        }] if FFMPEG_PATH else []
-    })
+        }]
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -163,18 +170,14 @@ def _yt_download_audio(video_id_or_url: str, file_prefix: str) -> tuple[str | No
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                     return f, title
     except Exception as e:
-        logging.error(f"Audio yuklashda xatolar: {e}")
+        logging.error(f"Audio yuklashda xatolik: {e}")
 
     return None, "Audio Track"
 
 # ---------------------------------------------------------------------------
-# 6. IJTIMOIY TARMOQLARDAN VIDEO YUKLASH (Instagram, TikTok, YouTube Video, va h.k)
+# 6. VIDEO YUKLASH (Instagram, TikTok, YouTube va boshqalar)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    """
-    Foydalanuvchi Instagram, TikTok, YouTube yoki boshqa ijtimoiy tarmoq linkini
-    yuborganda videoni eng yaxshi sifatda yuklab beradi.
-    """
     return await asyncio.to_thread(_download_social_video, url.strip())
 
 def _download_social_video(url: str) -> dict:
@@ -183,10 +186,10 @@ def _download_social_video(url: str) -> dict:
 
     opts = get_base_yt_opts()
     opts.update({
-        'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best', # Telegram mos format
+        'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best',
         'outtmpl': outtmpl,
         'overwrites': True,
-        'max_filesize': 50 * 1024 * 1024, # Telegram botlar uchun maksimum 50MB
+        'max_filesize': 50 * 1024 * 1024,
     })
 
     try:
