@@ -36,46 +36,55 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Railway IP blokidan holi bo'lgan va YouTube bazasini to'liq beradigan API instansiyalari
+# Ishonchli va yangilangan API tugunlari (Instances)
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://api.piped.privacydev.net",
     "https://pipedapi.palvelu.org",
-    "https://pipedapi.mha.fi"
+    "https://pipedapi.mha.fi",
+    "https://piped-api.garudalinux.org"
 ]
 
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
     "https://invidious.flokinet.to",
-    "https://invidious.privacydev.net"
+    "https://invidious.privacydev.net",
+    "https://inv.tux.pizza"
 ]
 
 
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
-    minutes = int(seconds) // 60
-    secs = int(seconds) % 60
-    return f"{minutes}:{secs:02d}"
+    try:
+        seconds = int(seconds)
+        minutes = seconds // 60
+        secs = seconds % 60
+        return f"{minutes}:{secs:02d}"
+    except Exception:
+        return "0:00"
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (Piped va Invidious orqali YouTube bazasi bo'yicha)
+# QIDIRUV (Kengaytirilgan Fallback Tizimi)
 # ---------------------------------------------------------------------------
-async def search_tracks(query: str, limit: int = 25) -> list[dict]:
+async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
+    if not search_query:
+        return []
 
-    # 1. Piped API (YouTube Music va Video qidiruvi)
+    # 1. Piped API orqali qidiruv
     results = await _search_via_piped(search_query, limit)
     if results:
         return results
 
-    # 2. Invidious API
+    # 2. Agar Piped ishlamasa -> Invidious API orqali qidiruv
     results = await _search_via_invidious(search_query, limit)
     if results:
         return results
 
+    logging.warning(f"Barcha API-larda qidiruv muvaffaqiyatsiz bo'ldi: {search_query}")
     return []
 
 
@@ -85,13 +94,13 @@ async def _search_via_piped(query: str, limit: int) -> list[dict]:
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/search"
-                # filter bo'sh qoldirilsa ham qo'shiq, ham videolarni to'liq topadi
                 params = {"q": query, "filter": "all"}
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
+                        items = data.get("items", [])
                         results = []
-                        for entry in data.get("items", []):
+                        for entry in items:
                             if len(results) >= limit:
                                 break
                             item_url = entry.get("url", "")
@@ -99,13 +108,15 @@ async def _search_via_piped(query: str, limit: int) -> list[dict]:
                                 item_id = item_url.split("/watch?v=")[1].split("&")[0]
                                 results.append({
                                     'id': item_id,
-                                    'title': entry.get("title", "Unknown"),
+                                    'title': entry.get("title", "Unknown Track"),
                                     'duration': format_duration(entry.get("duration", 0)),
                                     'uploader': entry.get("uploaderName", "YouTube")
                                 })
                         if results:
+                            logging.info(f"✅ Piped ({instance}) orqali {len(results)} ta natija topildi.")
                             return results
-            except Exception:
+            except Exception as e:
+                logging.debug(f"Piped {instance} qidiruv xatosi: {e}")
                 continue
     return []
 
@@ -117,7 +128,7 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
             try:
                 url = f"{instance}/api/v1/search"
                 params = {"q": query, "type": "video"}
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         results = []
@@ -125,19 +136,21 @@ async def _search_via_invidious(query: str, limit: int) -> list[dict]:
                             if entry.get("videoId"):
                                 results.append({
                                     'id': entry.get("videoId"),
-                                    'title': entry.get("title", "Unknown"),
+                                    'title': entry.get("title", "Unknown Track"),
                                     'duration': format_duration(entry.get("lengthSeconds", 0)),
                                     'uploader': entry.get("author", "YouTube")
                                 })
                         if results:
+                            logging.info(f"✅ Invidious ({instance}) orqali {len(results)} ta natija topildi.")
                             return results
-            except Exception:
+            except Exception as e:
+                logging.debug(f"Invidious {instance} qidiruv xatosi: {e}")
                 continue
     return []
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH (Railway Server-IP bloksiz)
+# AUDIO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
@@ -154,12 +167,12 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
     else:
         file_prefix = track_id
 
-    # 2. Piped Stream orqali yuklab olish (Bot check bo'lmaydi)
+    # 2. Piped orqali yuklab olish
     piped_file, title = await _download_via_piped(track_id, file_prefix)
     if piped_file:
         return piped_file, title, None
 
-    # 3. Invidious Stream orqali yuklab olish
+    # 3. Invidious orqali yuklab olish
     inv_file, inv_title = await _download_via_invidious(track_id, file_prefix)
     if inv_file:
         return inv_file, inv_title, None
@@ -173,7 +186,7 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/streams/{video_id}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -182,7 +195,6 @@ async def _download_via_piped(video_id: str, file_prefix: str) -> tuple[str | No
                     if not audio_streams:
                         continue
 
-                    # Oqim manzilini olamiz
                     stream_url = audio_streams[0].get("url")
                     ext = audio_streams[0].get("format", "m4a").lower()
                     raw_path = os.path.join(DOWNLOAD_DIR, f"{file_prefix}_raw.{ext}")
@@ -216,7 +228,7 @@ async def _download_via_invidious(video_id: str, file_prefix: str) -> tuple[str 
         for instance in INVIDIOUS_INSTANCES:
             try:
                 url = f"{instance}/api/v1/videos/{video_id}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json()
