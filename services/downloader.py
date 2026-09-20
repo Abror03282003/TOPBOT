@@ -10,7 +10,7 @@ from database import get_cached_file, save_to_cache
 __all__ = ["search_tracks", "download_audio_by_id", "download_media"]
 
 # ---------------------------------------------------------------------------
-# 1. FFmpeg va Yo'llarni sozlash
+# 1. FFmpeg va Yo'llar
 # ---------------------------------------------------------------------------
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
@@ -37,15 +37,14 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 COOKIES_FILE = os.path.abspath("cookies.txt")
 
-# Dynamic cookies.txt generation
 cookies_env = os.environ.get("YOUTUBE_COOKIES")
 if cookies_env:
     try:
         with open(COOKIES_FILE, "w", encoding="utf-8") as f:
             f.write(cookies_env.strip())
-        logging.info("🍪 YOUTUBE_COOKIES orqali cookies.txt yaratildi.")
+        logging.info("🍪 Cookies muvaffaqiyatli yuklandi.")
     except Exception as e:
-        logging.error(f"Cookies faylini yozishda xato: {e}")
+        logging.error(f"Cookies yozishda xato: {e}")
 
 
 def format_duration(seconds) -> str:
@@ -73,7 +72,7 @@ def _get_base_opts():
 
 
 # ---------------------------------------------------------------------------
-# 2. QIDIRUV (YouTube + SoundCloud Fallback)
+# 2. QIDIRUV
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
@@ -83,16 +82,11 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
 
 
 def _search_tracks_sync(query: str, limit: int) -> list[dict]:
-    # 1. YouTube orqali qidiruv
+    # 1. YouTube Qidiruv
     opts = _get_base_opts()
     opts.update({
         'extract_flat': True,
         'skip_download': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'mweb', 'android']
-            }
-        }
     })
 
     try:
@@ -102,18 +96,22 @@ def _search_tracks_sync(query: str, limit: int) -> list[dict]:
             if res and 'entries' in res:
                 for entry in res['entries']:
                     if entry and entry.get('id'):
+                        title = entry.get('title', 'Unknown Track')
+                        uploader = entry.get('uploader') or 'YouTube'
                         items.append({
                             'id': entry.get('id'),
-                            'title': entry.get('title', 'Unknown Track'),
+                            'title': title,
                             'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader') or 'YouTube'
+                            'uploader': uploader,
+                            # Qo'shiq nomi bo'yicha fallback uchun maxsus ID biriktiramiz
+                            'search_meta': f"{title} {uploader}".strip()
                         })
             if items:
                 return items
     except Exception as e:
-        logging.warning(f"YouTube qidiruv o'xshamadi: {e}. SoundCloud sinab ko'rilmoqda...")
+        logging.warning(f"YouTube qidiruv xatosi: {e}. SoundCloud sinab ko'rilmoqda...")
 
-    # 2. SoundCloud orqali qidiruv (YouTube IP bloklanganda)
+    # 2. SoundCloud Qidiruv
     try:
         sc_opts = _get_base_opts()
         sc_opts.update({'extract_flat': True, 'skip_download': True})
@@ -139,24 +137,23 @@ def _search_tracks_sync(query: str, limit: int) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 3. AUDIO YUKLASH (YouTube -> SoundCloud Fallback)
+# 3. AUDIO YUKLASH
 # ---------------------------------------------------------------------------
-async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
+async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
 
-    # Keshni teshirish
     cached_file_id = await get_cached_file(track_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
 
-    file_path, title = await asyncio.to_thread(_download_audio_sync, track_id)
+    file_path, title = await asyncio.to_thread(_download_audio_sync, track_id, track_title)
     if file_path:
         return file_path, title, None
 
     return None, "Audio Track", None
 
 
-def _download_audio_sync(track_id: str) -> tuple[str | None, str]:
+def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | None, str]:
     if track_id.startswith("http://") or track_id.startswith("https://"):
         target_url = track_id
         file_prefix = f"audio_{abs(hash(track_id))}"
@@ -166,8 +163,8 @@ def _download_audio_sync(track_id: str) -> tuple[str | None, str]:
 
     outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
 
-    # 1-Urinish: YouTube clientlar to'plami bilan yuklash
-    clients = [['tv_embedded'], ['mweb'], ['android'], ['ios']]
+    # 1. YouTube orqali yuklash urinishi (iOS/Android clientlar bilan)
+    clients = [['ios'], ['android'], ['mweb'], ['tv_embedded']]
     for client in clients:
         opts = _get_base_opts()
         opts.update({
@@ -204,9 +201,11 @@ def _download_audio_sync(track_id: str) -> tuple[str | None, str]:
             logging.warning(f"YouTube client {client} xatosi: {e}")
             continue
 
-    # 2-Urinish: Agar YouTube IP bloklagan bo'lsa, SoundCloud orqali yuklab beradi
+    # 2. SoundCloud orqali qidirib yuklash (YouTube bloklangan bo'lsa)
     try:
-        logging.info("🔄 YouTube bloklandi, SoundCloud orqali yuklanmoqda...")
+        search_query = track_title if track_title else track_id
+        logging.info(f"🔄 YouTube bloklandi. SoundCloud'dan qidirilmoqda: '{search_query}'")
+
         sc_opts = _get_base_opts()
         sc_opts.update({
             'format': 'bestaudio/best',
@@ -222,14 +221,12 @@ def _download_audio_sync(track_id: str) -> tuple[str | None, str]:
                 'preferredquality': '192',
             }]
 
-        sc_search_target = target_url if target_url.startswith("http") else f"scsearch1:{track_id}"
         with yt_dlp.YoutubeDL(sc_opts) as ydl:
-            info = ydl.extract_info(sc_search_target, download=True)
+            # YouTube ID o'rniga trek NOMI bo'yicha qidiramiz
+            info = ydl.extract_info(f"scsearch1:{search_query}", download=True)
             title = "Audio Track"
-            if info and 'entries' in info and info['entries']:
+            if info and 'entries' in info and len(info['entries']) > 0:
                 title = info['entries'][0].get('title', 'Audio Track')
-            elif info:
-                title = info.get('title', 'Audio Track')
 
             pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
             for f in glob.glob(pattern):
@@ -259,11 +256,6 @@ def _download_social_video(url: str) -> dict:
         'outtmpl': outtmpl,
         'overwrites': True,
         'max_filesize': 50 * 1024 * 1024,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'mweb', 'android']
-            }
-        }
     })
 
     if FFMPEG_PATH:
