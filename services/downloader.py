@@ -3,7 +3,7 @@ import glob
 import shutil
 import asyncio
 import logging
-import requests
+import aiohttp
 import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file
@@ -34,6 +34,8 @@ if FFPROBE_PATH:
 DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
@@ -43,7 +45,7 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (SoundCloud va YouTube muqobili)
+# QIDIRUV (SoundCloud & YouTube Fallback)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     query = query.strip()
@@ -52,7 +54,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     return await asyncio.to_thread(_search_sync, query, limit)
 
 def _search_sync(query: str, limit: int) -> list[dict]:
-    # 1-Bosqich: SoundCloud orqali qidirish (IP bloklanmaydi, juda tez ishlaydi)
+    # 1. SoundCloud orqali qidiruv
     try:
         opts = {
             'quiet': True,
@@ -79,14 +81,14 @@ def _search_sync(query: str, limit: int) -> list[dict]:
     except Exception as e:
         logging.warning(f"SoundCloud qidiruvida xatolik: {e}")
 
-    # 2-Bosqich: YouTube Search (Ochiq User-Agent bilan)
+    # 2. YouTube Search Fallback
     try:
         opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': True,
             'skip_download': True,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'user_agent': USER_AGENT,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -117,13 +119,6 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
     if cached_file_id:
         return None, "Audio Track", cached_file_id
 
-    file_path, title = await asyncio.to_thread(_download_audio_sync, track_id, track_title)
-    if file_path:
-        return file_path, title, None
-
-    return None, "Audio Track", None
-
-def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | None, str]:
     if track_id.startswith("http://") or track_id.startswith("https://"):
         target_url = track_id
         file_prefix = f"audio_{abs(hash(track_id))}"
@@ -133,7 +128,7 @@ def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | 
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1. COBALT API ORQALI YUKLASH (Bulutli IP bloklarini chetlab o'tadi)
+    # 1. COBALT API (aiohttp bilan)
     try:
         logging.info(f"🚀 Cobalt API orqali yuklanmoqda: {target_url}")
         payload = {
@@ -143,30 +138,36 @@ def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | 
         }
         headers = {
             "Accept": "application/json",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT
         }
-        response = requests.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=15)
-        data = response.json()
-
-        download_url = None
-        if data.get("status") in ["tunnel", "redirect"]:
-            download_url = data.get("url")
-
-        if download_url:
-            r = requests.get(download_url, stream=True, timeout=30)
-            if r.status_code == 200:
-                with open(out_file, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
-                    logging.info(f"✅ Cobalt API orqali muvaffaqiyatli yuklandi: {out_file}")
-                    return out_file, track_title or "Audio Track"
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post("https://api.cobalt.tools/", json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    download_url = data.get("url") if data.get("status") in ["tunnel", "redirect"] else None
+                    if download_url:
+                        async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=40)) as file_resp:
+                            if file_resp.status == 200:
+                                with open(out_file, 'wb') as f:
+                                    async for chunk in file_resp.content.iter_chunked(8192):
+                                        f.write(chunk)
+                                if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                    logging.info(f"✅ Cobalt API orqali muvaffaqiyatli yuklandi: {out_file}")
+                                    return out_file, track_title or "Audio Track", None
     except Exception as e:
         logging.warning(f"Cobalt API yuklashda xatolik: {e}")
 
-    # 2. SOUNDCLOUD / YT-DLP FALLBACK YUKLASH
+    # 2. SOUNDCLOUD / YT-DLP FALLBACK
+    file_path, title = await asyncio.to_thread(_download_fallback_sync, target_url, file_prefix, track_title)
+    if file_path:
+        return file_path, title, None
+
+    return None, "Audio Track", None
+
+def _download_fallback_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
     try:
-        logging.info(f"🔄 Zaxira yo'li orqali yuklanmoqda...")
+        logging.info("🔄 Zaxira yo'li orqali yuklanmoqda...")
         opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s"),
@@ -183,7 +184,7 @@ def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | 
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target_url, download=True)
-            title = info.get('title', 'Audio Track') if info else 'Audio Track'
+            title = info.get('title', track_title or 'Audio Track') if info else 'Audio Track'
             
             for f in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")):
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
@@ -197,27 +198,30 @@ def _download_audio_sync(track_id: str, track_title: str = None) -> tuple[str | 
 # MEDIA YUKLASH (Video)
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
-    return await asyncio.to_thread(_download_video_sync, url.strip())
-
-def _download_video_sync(url: str) -> dict:
+    url = url.strip()
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
-    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
-    
+    v_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
+
     try:
         payload = {"url": url, "downloadMode": "auto"}
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        response = requests.post("https://api.cobalt.tools/", json=payload, headers=headers, timeout=15)
-        data = response.json()
-        
-        if data.get("status") in ["tunnel", "redirect"]:
-            v_url = data.get("url")
-            r = requests.get(v_url, stream=True, timeout=60)
-            v_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
-            with open(v_file, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            if os.path.exists(v_file) and os.path.getsize(v_file) > 10240:
-                return {"file_path": v_file, "title": "Video", "id": file_prefix}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post("https://api.cobalt.tools/", json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    if data.get("status") in ["tunnel", "redirect"]:
+                        v_url = data.get("url")
+                        async with session.get(v_url, timeout=aiohttp.ClientTimeout(total=60)) as file_resp:
+                            if file_resp.status == 200:
+                                with open(v_file, 'wb') as f:
+                                    async for chunk in file_resp.content.iter_chunked(8192):
+                                        f.write(chunk)
+                                if os.path.exists(v_file) and os.path.getsize(v_file) > 10240:
+                                    return {"file_path": v_file, "title": "Video", "id": file_prefix}
     except Exception as e:
         logging.error(f"Video yuklashda xatolik: {e}")
 
