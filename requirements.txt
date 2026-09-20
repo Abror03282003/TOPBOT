@@ -6,3 +6,4 @@ imageio-ffmpeg
 pydub
 aiohttp
 yt-dlp-youtube-oauth2
+requests
