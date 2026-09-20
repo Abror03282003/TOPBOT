@@ -36,6 +36,18 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.drgns.space",
+    "https://vid.puffyan.us"
+]
+
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net"
+]
+
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
@@ -45,16 +57,121 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (SoundCloud & YouTube Fallback)
+# KO'P BOSQICHLI SERGAK QIDIRUV
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     query = query.strip()
     if not query:
         return []
-    return await asyncio.to_thread(_search_sync, query, limit)
 
-def _search_sync(query: str, limit: int) -> list[dict]:
-    # 1. SoundCloud orqali qidiruv
+    # 1. YouTube Web Search (yt-dlp mweb client - eng ko'p natija beradi)
+    results = await asyncio.to_thread(_search_ytdlp_sync, query, limit)
+    if results:
+        return results
+
+    # 2. Piped API orqali qidiruv
+    results = await _search_piped(query, limit)
+    if results:
+        return results
+
+    # 3. Invidious API orqali qidiruv
+    results = await _search_invidious(query, limit)
+    if results:
+        return results
+
+    # 4. SoundCloud Fallback
+    return await asyncio.to_thread(_search_soundcloud_sync, query, limit)
+
+
+def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
+    try:
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'user_agent': USER_AGENT,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['mweb', 'android']
+                }
+            }
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            items = []
+            if res and 'entries' in res:
+                for entry in res['entries']:
+                    if entry and entry.get('id'):
+                        items.append({
+                            'id': entry.get('id'),
+                            'title': entry.get('title', 'Unknown Track'),
+                            'duration': format_duration(entry.get('duration', 0)),
+                            'uploader': entry.get('uploader') or entry.get('channel') or 'YouTube'
+                        })
+            if items:
+                logging.info(f"✅ yt-dlp mweb orqali {len(items)} ta qo'shiq topildi.")
+                return items
+    except Exception as e:
+        logging.warning(f"yt-dlp search xatosi: {e}")
+    return []
+
+
+async def _search_piped(query: str, limit: int) -> list[dict]:
+    headers = {"User-Agent": USER_AGENT}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in PIPED_INSTANCES:
+            try:
+                url = f"{instance}/search"
+                params = {"q": query, "filter": "music_songs"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = []
+                        for entry in data.get("items", [])[:limit]:
+                            v_id = entry.get("url", "").replace("/watch?v=", "")
+                            if v_id:
+                                items.append({
+                                    'id': v_id,
+                                    'title': entry.get("title", "Unknown Track"),
+                                    'duration': format_duration(entry.get("duration", 0)),
+                                    'uploader': entry.get("uploaderName", "YouTube")
+                                })
+                        if items:
+                            logging.info(f"✅ Piped orqali {len(items)} ta qo'shiq topildi.")
+                            return items
+            except Exception:
+                continue
+    return []
+
+
+async def _search_invidious(query: str, limit: int) -> list[dict]:
+    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/search"
+                params = {"q": query, "type": "video"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = []
+                        for entry in data[:limit]:
+                            if entry.get("videoId"):
+                                items.append({
+                                    'id': entry.get("videoId"),
+                                    'title': entry.get("title", "Unknown Track"),
+                                    'duration': format_duration(entry.get("lengthSeconds", 0)),
+                                    'uploader': entry.get("author", "YouTube")
+                                })
+                        if items:
+                            logging.info(f"✅ Invidious orqali {len(items)} ta qo'shiq topildi.")
+                            return items
+            except Exception:
+                continue
+    return []
+
+
+def _search_soundcloud_sync(query: str, limit: int) -> list[dict]:
     try:
         opts = {
             'quiet': True,
@@ -67,10 +184,10 @@ def _search_sync(query: str, limit: int) -> list[dict]:
             items = []
             if res and 'entries' in res:
                 for entry in res['entries']:
-                    if entry and (entry.get('url') or entry.get('webpage_url')):
-                        sc_url = entry.get('url') or entry.get('webpage_url')
+                    webpage_url = entry.get('webpage_url') or entry.get('url')
+                    if webpage_url and "soundcloud.com/" in webpage_url and "api.soundcloud.com" not in webpage_url:
                         items.append({
-                            'id': sc_url,
+                            'id': webpage_url,
                             'title': entry.get('title', 'Unknown Track'),
                             'duration': format_duration(entry.get('duration', 0)),
                             'uploader': entry.get('uploader') or 'SoundCloud',
@@ -79,35 +196,7 @@ def _search_sync(query: str, limit: int) -> list[dict]:
                 logging.info(f"✅ SoundCloud orqali {len(items)} ta qo'shiq topildi.")
                 return items
     except Exception as e:
-        logging.warning(f"SoundCloud qidiruvida xatolik: {e}")
-
-    # 2. YouTube Search Fallback
-    try:
-        opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-            'skip_download': True,
-            'user_agent': USER_AGENT,
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            items = []
-            if res and 'entries' in res:
-                for entry in res['entries']:
-                    if entry and entry.get('id'):
-                        items.append({
-                            'id': entry.get('id'),
-                            'title': entry.get('title', 'Unknown Track'),
-                            'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader') or 'YouTube',
-                        })
-            if items:
-                logging.info(f"✅ YouTube orqali {len(items)} ta qo'shiq topildi.")
-                return items
-    except Exception as e:
-        logging.error(f"YouTube qidiruvida xatolik: {e}")
-
+        logging.warning(f"SoundCloud qidiruv xatosi: {e}")
     return []
 
 # ---------------------------------------------------------------------------
@@ -119,16 +208,18 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
     if cached_file_id:
         return None, "Audio Track", cached_file_id
 
-    if track_id.startswith("http://") or track_id.startswith("https://"):
-        target_url = track_id
-        file_prefix = f"audio_{abs(hash(track_id))}"
-    else:
+    if not track_id.startswith("http://") and not track_id.startswith("https://"):
+        file_path, title = await _download_via_invidious_stream(track_id, track_title)
+        if file_path:
+            return file_path, title, None
         target_url = f"https://www.youtube.com/watch?v={track_id}"
         file_prefix = f"audio_{track_id}"
+    else:
+        target_url = track_id
+        file_prefix = f"audio_{abs(hash(track_id))}"
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1. COBALT API (aiohttp bilan)
     try:
         logging.info(f"🚀 Cobalt API orqali yuklanmoqda: {target_url}")
         payload = {
@@ -153,21 +244,60 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
                                     async for chunk in file_resp.content.iter_chunked(8192):
                                         f.write(chunk)
                                 if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
-                                    logging.info(f"✅ Cobalt API orqali muvaffaqiyatli yuklandi: {out_file}")
+                                    logging.info(f"✅ Cobalt API orqali yuklandi: {out_file}")
                                     return out_file, track_title or "Audio Track", None
     except Exception as e:
-        logging.warning(f"Cobalt API yuklashda xatolik: {e}")
+        logging.warning(f"Cobalt API xatosi: {e}")
 
-    # 2. SOUNDCLOUD / YT-DLP FALLBACK
     file_path, title = await asyncio.to_thread(_download_fallback_sync, target_url, file_prefix, track_title)
     if file_path:
         return file_path, title, None
 
     return None, "Audio Track", None
 
+
+async def _download_via_invidious_stream(video_id: str, track_title: str = None) -> tuple[str | None, str]:
+    headers = {"User-Agent": USER_AGENT}
+    async with aiohttp.ClientSession(headers=headers) as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/videos/{video_id}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        title = data.get("title", track_title or "Audio Track")
+                        adaptive = data.get("adaptiveFormats", [])
+                        audio_streams = [f for f in adaptive if "audio" in f.get("type", "")]
+                        
+                        if audio_streams:
+                            audio_url = audio_streams[0].get("url")
+                            ext = audio_streams[0].get("container", "m4a")
+                            raw_file = os.path.join(DOWNLOAD_DIR, f"inv_{video_id}.{ext}")
+
+                            async with session.get(audio_url, timeout=aiohttp.ClientTimeout(total=30)) as s_resp:
+                                if s_resp.status == 200:
+                                    with open(raw_file, "wb") as f:
+                                        async for chunk in s_resp.content.iter_chunked(64 * 1024):
+                                            f.write(chunk)
+
+                                    if os.path.exists(raw_file) and os.path.getsize(raw_file) > 10240:
+                                        mp3_file = os.path.join(DOWNLOAD_DIR, f"inv_{video_id}.mp3")
+                                        if FFMPEG_PATH:
+                                            try:
+                                                sound = AudioSegment.from_file(raw_file)
+                                                sound.export(mp3_file, format="mp3", bitrate="192k")
+                                                os.remove(raw_file)
+                                                return mp3_file, title
+                                            except Exception:
+                                                return raw_file, title
+                                        return raw_file, title
+            except Exception:
+                continue
+    return None, track_title or "Audio Track"
+
+
 def _download_fallback_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
     try:
-        logging.info("🔄 Zaxira yo'li orqali yuklanmoqda...")
         opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s"),
