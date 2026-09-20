@@ -51,25 +51,27 @@ if raw_cookies:
 else:
     COOKIES_FILE = None
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+# Ishlayotgan yangi Piped API instansiyalari
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.tokhmi.xyz",
-    "https://piped-api.garudalinux.org"
+    "https://pipedapi.adminforge.de",
+    "https://api.piped.yt",
+    "https://pipedapi.mha.fi",
+    "https://pipedapi.astral.cyou"
 ]
 
+# Ishlayotgan Invidious instansiyalari
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
-    "https://invidious.drgns.space",
-    "https://vid.puffyan.us"
+    "https://invidious.flokinet.to",
+    "https://invidious.privacydev.net"
 ]
 
 COBALT_INSTANCES = [
     "https://api.cobalt.tools",
-    "https://cobalt-api.kwiatek.xyz",
     "https://co.wuk.sh"
 ]
 
@@ -81,6 +83,10 @@ def format_duration(seconds) -> str:
     except Exception:
         return "0:00"
 
+def get_ssl_session():
+    connector = aiohttp.TCPConnector(ssl=False)
+    return aiohttp.ClientSession(connector=connector, headers={"User-Agent": USER_AGENT})
+
 # ---------------------------------------------------------------------------
 # QIDIRUV
 # ---------------------------------------------------------------------------
@@ -89,13 +95,13 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     if not query:
         return []
 
-    # 1. yt-dlp Android/iOS client qidiruvi
-    results = await asyncio.to_thread(_search_ytdlp_sync, query, limit)
+    # 1. Piped API (Juda tez)
+    results = await _search_piped(query, limit)
     if results:
         return results
 
-    # 2. Piped API
-    results = await _search_piped(query, limit)
+    # 2. yt-dlp qidiruvi
+    results = await asyncio.to_thread(_search_ytdlp_sync, query, limit)
     if results:
         return results
 
@@ -118,7 +124,7 @@ def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
             'user_agent': USER_AGENT,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'tv_embedded', 'mweb'],
+                    'player_client': ['ios', 'android', 'mweb', 'tv'],
                     'player_skip': ['webpage', 'configs'],
                 }
             }
@@ -147,8 +153,7 @@ def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
 
 
 async def _search_piped(query: str, limit: int) -> list[dict]:
-    headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with get_ssl_session() as session:
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/search"
@@ -167,6 +172,7 @@ async def _search_piped(query: str, limit: int) -> list[dict]:
                                     'uploader': entry.get("uploaderName", "YouTube")
                                 })
                         if items:
+                            logging.info(f"✅ Piped API orqali {len(items)} ta qo'shiq topildi.")
                             return items
             except Exception:
                 continue
@@ -174,7 +180,7 @@ async def _search_piped(query: str, limit: int) -> list[dict]:
 
 
 async def _search_invidious(query: str, limit: int) -> list[dict]:
-    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
+    async with get_ssl_session() as session:
         for instance in INVIDIOUS_INSTANCES:
             try:
                 url = f"{instance}/api/v1/search"
@@ -240,7 +246,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1-BOSQICH: Piped API Stream (YouTube bot-check cheklovini to'liq aylanib o'tadi)
+    # 1-BOSQICH: Piped API Stream (SSL bypass)
     logging.info(f"🚀 Piped stream orqali yuklanmoqda: {video_id}")
     file_path, title = await _download_via_piped_stream(video_id, track_title)
     if file_path:
@@ -258,8 +264,8 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
     if file_path:
         return file_path, title, None
 
-    # 4-BOSQICH: yt-dlp Android/TV Client (So'nggi iloj)
-    logging.info(f"🚀 yt-dlp Android/TV Client orqali yuklanmoqda: {target_url}")
+    # 4-BOSQICH: yt-dlp iOS/Android Client
+    logging.info(f"🚀 yt-dlp iOS Client orqali yuklanmoqda: {target_url}")
     file_path, title = await asyncio.to_thread(_download_ytdlp_client_sync, target_url, file_prefix, track_title)
     if file_path:
         return file_path, title, None
@@ -268,8 +274,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 
 
 async def _download_via_piped_stream(video_id: str, track_title: str = None) -> tuple[str | None, str]:
-    headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with get_ssl_session() as session:
         for instance in PIPED_INSTANCES:
             try:
                 url = f"{instance}/streams/{video_id}"
@@ -320,8 +325,8 @@ async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
     
     for instance in COBALT_INSTANCES:
         try:
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(instance, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with get_ssl_session() as session:
+                async with session.post(instance, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status in (200, 201):
                         data = await resp.json()
                         download_url = data.get("url") if data.get("status") in ["tunnel", "redirect"] else None
@@ -340,8 +345,7 @@ async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
 
 
 async def _download_via_invidious_stream(video_id: str, track_title: str = None) -> tuple[str | None, str]:
-    headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with get_ssl_session() as session:
         for instance in INVIDIOUS_INSTANCES:
             try:
                 url = f"{instance}/api/v1/videos/{video_id}"
@@ -390,12 +394,12 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'tv_embedded', 'mweb'],
+                    'player_client': ['ios', 'mweb', 'tv'],
                     'player_skip': ['webpage', 'configs'],
                 }
             },
             'http_headers': {
-                'User-Agent': 'com.google.android.youtube/19.02.39 (Linux; U; Android 12; gts8uw) gzip',
+                'User-Agent': 'com.google.ios.youtube/19.14.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X; en_US)',
                 'Accept-Language': 'en-US,en;q=0.9',
             }
         }
@@ -434,8 +438,8 @@ async def download_media(url: str) -> dict:
         try:
             payload = {"url": url, "downloadMode": "auto"}
             headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(instance, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with get_ssl_session() as session:
+                async with session.post(instance, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status in (200, 201):
                         data = await resp.json()
                         if data.get("status") in ["tunnel", "redirect"]:
