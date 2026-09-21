@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import glob
 import shutil
@@ -6,6 +7,7 @@ import asyncio
 import logging
 import aiohttp
 import yt_dlp
+from urllib.parse import urlparse, parse_qs
 from pydub import AudioSegment
 from database import get_cached_file
 
@@ -196,6 +198,26 @@ if not COBALT_API_KEY:
     )
 
 
+_VIDEO_ID_RE = re.compile(
+    r'(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/|live/))([A-Za-z0-9_-]{11})'
+)
+
+
+def _extract_video_id(url: str) -> str:
+    """youtu.be, /shorts/, /embed/, ?si= kabi barcha YouTube havola
+    ko'rinishlaridan video ID'ni ishonchli ajratib oladi. Eski kod faqat
+    'v=' yoki oxirgi '/' bo'lagini olardi va query-parametrlarni
+    (masalan '?si=...') ID'ga qo'shib yuborardi."""
+    match = _VIDEO_ID_RE.search(url)
+    if match:
+        return match.group(1)
+    parsed = urlparse(url)
+    qs_id = parse_qs(parsed.query).get("v")
+    if qs_id:
+        return qs_id[0]
+    return parsed.path.rstrip("/").split("/")[-1]
+
+
 def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
@@ -303,7 +325,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
         file_prefix = f"audio_{track_id}"
     else:
         target_url = track_id
-        video_id = track_id.split("v=")[-1].split("&")[0] if "v=" in track_id else track_id.split("/")[-1]
+        video_id = _extract_video_id(track_id)
         file_prefix = f"audio_{abs(hash(track_id))}"
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
@@ -436,21 +458,33 @@ async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
     return None
 
 
-def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
-    # Mobil/embedded client'lar odatda bot-tekshiruviga kamroq uchraydi va
-    # cookie talab qilmaydi — shularni birinchi navbatda sinaymiz.
-    # 'web' eng ko'p bloklanadigan client bo'lgani uchun oxiriga suramiz,
-    # va faqat shunda (haqiqiy) cookie mavjud bo'lsa unga cookie beramiz.
-    client_configs = [
-        (['ios'], False),
-        (['android'], False),
-        (['tv_embedded'], False),
-        (['mweb'], False),
-        (['web_creator'], True),
-        (['web'], True),
-    ]
+# PO Token provider (bgutil-ytdlp-pot-provider) o'rnatilgan bo'lsa, yt-dlp
+# standart client'lar (masalan 'web', 'tvhtml5') orqali ham cookie+PO token
+# bilan ishlashi mumkin — bu hozirgi (2026) YouTube bot-tekshiruvidan o'tishning
+# asosiy yo'li, chunki PO token'siz deyarli har qanday client vaqti-vaqti
+# bilan "Sign in to confirm you're not a bot" bilan bloklanadi.
+# Shu sabab birinchi urinishda player_client'ni MAJBURLAMAYMIZ — yt-dlp o'zi
+# PO token plugin orqali eng mos client'ni tanlaydi. Faqat shu urinish
+# muvaffaqiyatsiz bo'lsa, aniq client'larni birma-bir sinaymiz.
+client_configs = [
+    (None, True),             # standart (PO token plugin ishlaydi, cookie bilan)
+    (['tv_embedded'], False),
+    (['ios'], False),
+    (['android'], False),
+    (['mweb'], False),
+    (['web_creator'], True),
+]
 
-    for clients, use_cookies in client_configs:
+# YouTube ketma-ket keladigan so'rovlarni "hujum" deb hisoblab, IP'ni tezroq
+# bloklaydi. Urinishlar orasiga qisqa tanaffus qo'shish IP obro'sini saqlashga
+# yordam beradi (yt-dlp hujjatlaridagi tavsiya).
+_RETRY_DELAY_SECONDS = 2
+
+
+def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
+    last_error = None
+
+    for attempt, (clients, use_cookies) in enumerate(client_configs):
         try:
             opts = {
                 'format': 'ba/b',
@@ -458,16 +492,20 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
                 'overwrites': True,
                 'quiet': True,
                 'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': clients,
-                        'player_skip': ['js', 'configs', 'webpage']
-                    }
-                },
+                'retries': 2,
+                'socket_timeout': 20,
                 'http_headers': {
                     'User-Agent': USER_AGENT,
                 }
             }
+
+            if clients:
+                opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': clients,
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                }
 
             if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
                 opts['cookiefile'] = COOKIES_FILE
@@ -488,10 +526,56 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
                     if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                         return f, title
         except Exception as e:
-            logging.warning(f"yt-dlp ({clients}) urinishi xatosi: {e}")
+            last_error = e
+            logging.warning(f"yt-dlp ({clients or 'default'}) urinishi xatosi: {e}")
+            if attempt < len(client_configs) - 1:
+                time.sleep(_RETRY_DELAY_SECONDS)
             continue
 
+    if last_error:
+        logging.error(f"yt-dlp barcha client'lar bilan muvaffaqiyatsiz: {last_error}")
     return None, "Audio Track"
+
+
+def _download_video_ytdlp_sync(target_url: str, file_prefix: str) -> tuple[str | None, str]:
+    """download_media avval faqat Cobalt'ga tayangan edi — Cobalt instance
+    ishlamay qolsa (masalan kalitsiz 400 xatosi), video umuman yuklanmasdi.
+    Endi audio funksiyasidagi kabi yt-dlp orqali ham urinib ko'riladi."""
+    for clients, use_cookies in client_configs:
+        try:
+            opts = {
+                'format': 'best[ext=mp4]/best',
+                'outtmpl': os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s"),
+                'overwrites': True,
+                'quiet': True,
+                'no_warnings': True,
+                'retries': 2,
+                'socket_timeout': 20,
+                'http_headers': {'User-Agent': USER_AGENT},
+            }
+            if clients:
+                opts['extractor_args'] = {
+                    'youtube': {
+                        'player_client': clients,
+                        'player_skip': ['js', 'configs', 'webpage'],
+                    }
+                }
+            if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+                opts['cookiefile'] = COOKIES_FILE
+            if FFMPEG_PATH:
+                opts['ffmpeg_location'] = FFMPEG_PATH
+
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(target_url, download=True)
+                title = info.get('title', 'Video') if info else 'Video'
+                for f in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")):
+                    if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                        return f, title
+        except Exception as e:
+            logging.warning(f"yt-dlp video ({clients or 'default'}) urinishi xatosi: {e}")
+            time.sleep(_RETRY_DELAY_SECONDS)
+            continue
+    return None, "Video"
 
 
 async def download_media(url: str) -> dict:
@@ -504,6 +588,14 @@ async def download_media(url: str) -> dict:
     except Exception:
         pass
 
+    # 1-Bosqich: yt-dlp (PO token + cookie bilan, YouTube va boshqa ko'plab
+    # saytlar uchun ishlaydi)
+    logging.info(f"🚀 yt-dlp orqali video yuklanmoqda: {url}")
+    file_path, title = await asyncio.to_thread(_download_video_ytdlp_sync, url, file_prefix)
+    if file_path:
+        return {"file_path": file_path, "title": title, "id": file_prefix}
+
+    # 2-Bosqich: Cobalt API (yt-dlp qo'llamaydigan ba'zi platformalar uchun ham foydali)
     for instance in COBALT_INSTANCES:
         try:
             payload = {"url": url, "downloadMode": "auto"}
