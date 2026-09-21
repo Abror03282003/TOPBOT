@@ -34,21 +34,25 @@ except Exception:
 from aiogram import Bot, Dispatcher
 from database import init_db
 from handlers import start, download, admin, referral, shazam  # <-- shazam qo'shildi
+from services.downloader import log_pot_diagnostics
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-# COOKIES QISMI:
-YOUTUBE_COOKIES = os.environ.get("YOUTUBE_COOKIES")
-if YOUTUBE_COOKIES:
-    with open("cookies.txt", "w") as f:
-        f.write(YOUTUBE_COOKIES)
+# ESLATMA: YOUTUBE_COOKIES bu yerda EMAS, services/downloader.py'da
+# o'qiladi va tekshiriladi (Netscape format validatsiyasi bilan).
+# Bu yerda avval qo'shimcha, boshqa joyga cookies.txt yozadigan va
+# hech qayerda ishlatilmaydigan chalkash kod bor edi — olib tashlandi.
 
 async def main():
     logging.basicConfig(level=logging.INFO)
-    
+
     # Ma'lumotlar bazasini asinxron ishga tushirish
     await init_db()
-    
+
+    # PO Token / JS Challenge provider'lar haqiqatda ishlayaptimi — buni
+    # fon rejimida (botni bloklamasdan) tekshirib, loglarga chiqaramiz.
+    asyncio.create_task(asyncio.to_thread(log_pot_diagnostics))
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
