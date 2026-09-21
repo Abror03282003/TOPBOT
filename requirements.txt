@@ -1,8 +1,10 @@
 aiogram>=3.0.0
 aiosqlite
 shazamio
-yt-dlp>=2025.1.1
+yt-dlp>=2025.6.0
+bgutil-ytdlp-pot-provider>=1.1.0
 imageio-ffmpeg
 pydub
 aiohttp
 requests
+ 
