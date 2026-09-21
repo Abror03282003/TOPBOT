@@ -96,6 +96,48 @@ else:
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
+
+class _PotDiagLogger:
+    """yt-dlp'ning debug chiqishidan faqat PO Token va JS Challenge
+    provider qatorlarini ushlab, oddiy logging orqali ko'rsatadi. Bu
+    bo'lmasa, bgutil-ytdlp-pot-provider haqiqatda ishlayaptimi yoki yo'qligini
+    bilishning iloji yo'q edi (build muvaffaqiyatsiz bo'lsa ham jim
+    o'tib ketardi)."""
+
+    def debug(self, msg):
+        if '[pot]' in msg or '[jsc]' in msg or 'PO Token' in msg or 'JS Challenge' in msg:
+            logging.info(f"🔎 DIAGNOSTIKA: {msg.strip()}")
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
+def log_pot_diagnostics():
+    """Bot ishga tushganda BIR MARTA chaqiriladi: PO Token/JS Challenge
+    provider'lar haqiqatda topilganmi-yo'qmi, buni loglarga chiqaradi.
+    Agar 'PO Token Providers: none' ko'rinsa — bgutil plagin ishlamayapti,
+    demak build bosqichidagi npm/npx buyruqlari muvaffaqiyatsiz bo'lgan."""
+    try:
+        opts = {
+            'quiet': True,
+            'no_warnings': False,
+            'verbose': True,
+            'simulate': True,
+            'skip_download': True,
+            'logger': _PotDiagLogger(),
+            'extractor_args': {'youtube': {'player_client': ['mweb']}},
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info("https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False)
+    except Exception as e:
+        logging.info(f"🔎 DIAGNOSTIKA: tekshiruvda xatolik (bu normal bo'lishi mumkin): {e}")
+
 # ---------------------------------------------------------------------------
 # PIPED / INVIDIOUS INSTANCE RO'YXATI (dinamik yangilanadi)
 # ---------------------------------------------------------------------------
@@ -467,11 +509,11 @@ async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
 # PO token plugin orqali eng mos client'ni tanlaydi. Faqat shu urinish
 # muvaffaqiyatsiz bo'lsa, aniq client'larni birma-bir sinaymiz.
 client_configs = [
-    (None, True),             # standart (PO token plugin ishlaydi, cookie bilan)
+    (['mweb'], True),         # yt-dlp'ning rasmiy tavsiyasi: mweb + PO Token
+    (None, True),             # standart (yt-dlp o'zi client tanlaydi)
     (['tv_embedded'], False),
     (['ios'], False),
     (['android'], False),
-    (['mweb'], False),
     (['web_creator'], True),
 ]
 
