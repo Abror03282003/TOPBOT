@@ -96,6 +96,48 @@ else:
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
+# ---------------------------------------------------------------------------
+# PO TOKEN PROVIDER (bgutil-ytdlp-pot-provider HTTP server)
+# ---------------------------------------------------------------------------
+# Railway konteynerining o'zida Node/Deno ishlamasligi mumkin (nixpacks
+# nix-paketlarni har doim runtime image'ga to'liq o'tkazmaydi), shuning
+# uchun PO Token generatsiya qiluvchi server ALOHIDA xizmat sifatida
+# (masalan brainicism/bgutil-ytdlp-pot-provider Docker image'i) ishga
+# tushiriladi. Shu xizmatning ichki (Railway private network) manzilini
+# POT_PROVIDER_URL environment variable orqali beramiz.
+POT_PROVIDER_URL = os.environ.get("POT_PROVIDER_URL", "").strip().rstrip("/")
+if POT_PROVIDER_URL:
+    logging.info(f"✅ PO Token provider ulandi: {POT_PROVIDER_URL}")
+else:
+    logging.warning(
+        "⚠️ POT_PROVIDER_URL o'rnatilmagan — PO Token generatsiya qilinmaydi, "
+        "YouTube ko'p hollarda 'Sign in to confirm you're not a bot' bilan "
+        "bloklashi mumkin. Alohida bgutil-ytdlp-pot-provider xizmatini "
+        "o'rnatib, uning manzilini shu o'zgaruvchiga bering."
+    )
+
+
+def _pot_extractor_args() -> dict:
+    """POT_PROVIDER_URL berilgan bo'lsa, yt-dlp'ning youtube extractor_args
+    ichiga bgutil HTTP provider manzilini qo'shadi."""
+    if not POT_PROVIDER_URL:
+        return {}
+    return {'youtubepot-bgutilhttp': {'base_url': [POT_PROVIDER_URL]}}
+
+
+def _build_youtube_extractor_args(clients: list | None) -> dict:
+    """'youtube' (player_client) va PO Token ('youtubepot-bgutilhttp')
+    argumentlarini bitta joyda, to'g'ri (aka-uka kalitlar sifatida)
+    birlashtiradigan yordamchi funksiya — audio va video yuklash
+    funksiyalarida takrorlanmasligi uchun."""
+    args = dict(_pot_extractor_args())
+    if clients:
+        args['youtube'] = {
+            'player_client': clients,
+            'player_skip': ['js', 'configs', 'webpage'],
+        }
+    return args
+
 
 class _PotDiagLogger:
     """yt-dlp'ning debug chiqishidan faqat PO Token va JS Challenge
@@ -131,7 +173,7 @@ def log_pot_diagnostics():
             'simulate': True,
             'skip_download': True,
             'logger': _PotDiagLogger(),
-            'extractor_args': {'youtube': {'player_client': ['mweb']}},
+            'extractor_args': _build_youtube_extractor_args(['mweb']),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info("https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False)
@@ -301,9 +343,14 @@ def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
                     # mobil client'lar odatda web-cookie'siz ham ishlaydi va
                     # bot-tekshiruviga kamroq uchraydi
                     'player_client': ['ios', 'android', 'mweb'],
-                }
+                },
+                **_pot_extractor_args(),
             }
         }
+        # ^ e'tibor bering: PO Token argumenti 'youtube' kalitining ICHIGA
+        # emas, extractor_args'ning yuqori darajasiga (aka-uka kalit
+        # sifatida) qo'shiladi — chunki 'youtubepot-bgutilhttp' alohida
+        # extractor sifatida ishlaydi.
         # Qidiruvda cookie shart emas va mobil client bilan aralashib,
         # ziddiyat keltirib chiqarishi mumkin — shu sabab bu yerda ishlatilmaydi.
 
@@ -541,13 +588,9 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
                 }
             }
 
-            if clients:
-                opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': clients,
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
-                }
+            extractor_args = _build_youtube_extractor_args(clients)
+            if extractor_args:
+                opts['extractor_args'] = extractor_args
 
             if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
                 opts['cookiefile'] = COOKIES_FILE
@@ -595,13 +638,9 @@ def _download_video_ytdlp_sync(target_url: str, file_prefix: str) -> tuple[str |
                 'socket_timeout': 20,
                 'http_headers': {'User-Agent': USER_AGENT},
             }
-            if clients:
-                opts['extractor_args'] = {
-                    'youtube': {
-                        'player_client': clients,
-                        'player_skip': ['js', 'configs', 'webpage'],
-                    }
-                }
+            extractor_args = _build_youtube_extractor_args(clients)
+            if extractor_args:
+                opts['extractor_args'] = extractor_args
             if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
                 opts['cookiefile'] = COOKIES_FILE
             if FFMPEG_PATH:
