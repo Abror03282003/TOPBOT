@@ -48,13 +48,19 @@ if raw_cookies:
 else:
     COOKIES_FILE = None
 
-USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
-# Barqaror Cobalt hamda Proxy manbalari
+# Ishlaydigan Invidious va Cobalt instansiyalari
+INVIDIOUS_INSTANCES = [
+    "https://inv.riverside.rocks",
+    "https://invidious.nerqv.ps",
+    "https://invidious.flokinet.to",
+    "https://invidious.privacydev.net"
+]
+
 COBALT_INSTANCES = [
     "https://api.cobalt.tools",
-    "https://cobalt.qtfy.eu",
-    "https://cobalt.vxo.im"
+    "https://cobalt.qtfy.eu"
 ]
 
 def format_duration(seconds) -> str:
@@ -82,7 +88,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     if results:
         return results
 
-    # 2. SoundCloud zaxira qidiruvi (YouTube IP bloklangan hollarda)
+    # 2. SoundCloud zaxira qidiruvi
     return await asyncio.to_thread(_search_soundcloud_sync, query, limit)
 
 
@@ -156,32 +162,64 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 
     if not track_id.startswith("http://") and not track_id.startswith("https://"):
         target_url = f"https://www.youtube.com/watch?v={track_id}"
+        video_id = track_id
         file_prefix = f"audio_{track_id}"
     else:
         target_url = track_id
+        video_id = track_id.split("v=")[-1].split("&")[0] if "v=" in track_id else track_id.split("/")[-1]
         file_prefix = f"audio_{abs(hash(track_id))}"
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1. Cobalt API
+    # 1-BOSQICH: Invidious API Orqali Yuklash (Cloud IP cheklovlarisiz)
+    logging.info(f"🚀 Invidious API orqali yuklanmoqda: {video_id}")
+    file_path = await _download_via_invidious(video_id, out_file)
+    if file_path:
+        return file_path, track_title or "Audio Track", None
+
+    # 2-BOSQICH: Cobalt API
     logging.info(f"🚀 Cobalt API orqali yuklanmoqda: {target_url}")
     file_path = await _download_via_cobalt(target_url, out_file)
     if file_path:
         return file_path, track_title or "Audio Track", None
 
-    # 2. YT-DLP (iOS / Web Clients)
+    # 3-BOSQICH: yt-dlp (Zaxira)
     logging.info(f"🚀 yt-dlp client orqali yuklanmoqda: {target_url}")
     file_path, title = await asyncio.to_thread(_download_ytdlp_client_sync, target_url, file_prefix, track_title)
     if file_path:
         return file_path, title, None
 
-    # 3. SoundCloud fallback (agar target_url SoundCloud bo'lsa)
-    if "soundcloud.com" in target_url:
-        file_path, title = await asyncio.to_thread(_download_soundcloud_sync, target_url, file_prefix, track_title)
-        if file_path:
-            return file_path, title, None
-
     return None, "Audio Track", None
+
+
+async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            async with get_session() as session:
+                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        adaptive_formats = data.get("adaptiveFormats", [])
+                        # Faqat audio oqimlarni ajratib olamiz
+                        audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio/")]
+                        if audio_streams:
+                            # Eng yuqori bitrate-li audioni tanlaymiz
+                            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                            download_url = best_audio.get("url")
+                            if download_url:
+                                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                                    if file_resp.status == 200:
+                                        with open(out_file, 'wb') as f:
+                                            async for chunk in file_resp.content.iter_chunked(16384):
+                                                f.write(chunk)
+                                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                            logging.info("✅ Invidious API orqali muvaffaqiyatli yuklandi.")
+                                            return out_file
+        except Exception as e:
+            logging.warning(f"Invidious ({instance}) xatosi: {e}")
+            continue
+    return None
 
 
 async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
@@ -219,12 +257,12 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'mweb', 'tv'],
+                    'player_client': ['ios', 'mweb'],
                     'player_skip': ['webpage', 'configs'],
                 }
             },
             'http_headers': {
-                'User-Agent': 'com.google.ios.youtube/19.14.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X; en_US)',
+                'User-Agent': USER_AGENT,
             }
         }
 
@@ -249,28 +287,6 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
     except Exception as e:
         logging.error(f"yt-dlp yuklash xatosi: {e}")
 
-    return None, "Audio Track"
-
-
-def _download_soundcloud_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
-    try:
-        opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s"),
-            'quiet': True,
-        }
-        if FFMPEG_PATH:
-            opts['ffmpeg_location'] = FFMPEG_PATH
-            opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(target_url, download=True)
-            title = info.get('title', track_title or 'Audio Track') if info else 'Audio Track'
-            for f in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")):
-                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
-                    return f, title
-    except Exception:
-        pass
     return None, "Audio Track"
 
 
