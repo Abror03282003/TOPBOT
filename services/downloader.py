@@ -56,25 +56,23 @@ else:
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Bugungi kunda hozirda ISHLAYOTGAN va faol instansiyalar ro'yxati
+# Dynamic Public Instance'lar
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
-    "https://pipedapi.tokhmi.xyz",
-    "https://pipedapi.moomoo.me",
-    "https://api.piped.privacydev.net"
+    "https://pipedapi-libre.kavin.rocks",
+    "https://piped-api.lunar.icu",
+    "https://api.piped.yt",
 ]
 
 INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
-    "https://inv.tux.pizza",
-    "https://invidious.projectsegfau.lt",
-    "https://invidious.no-fuss-it.de"
+    "https://iv.melmac.space",
+    "https://invidious.jing.rocks",
 ]
 
-COBALT_INSTANCES = [
-    "https://api.cobalt.tools",
-    "https://cobalt-api.kwiatek.xyz"
-]
+COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
+COBALT_INSTANCES = ["https://api.cobalt.tools"] if COBALT_API_KEY else []
 
 def format_duration(seconds) -> str:
     if not seconds:
@@ -85,7 +83,6 @@ def format_duration(seconds) -> str:
         return "0:00"
 
 def get_session():
-    # Railway DNS so'rovlarida timeout bo'lmasligi uchun SSL va Timeout sozlamalari
     connector = aiohttp.TCPConnector(ssl=False)
     return aiohttp.ClientSession(connector=connector, headers={"User-Agent": USER_AGENT})
 
@@ -184,11 +181,11 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1-Bosqich: Cobalt API (Eng tez va blokirovka bo'lmaydigan usul)
-    logging.info(f"🚀 Cobalt API orqali yuklanmoqda: {target_url}")
-    file_path = await _download_via_cobalt(target_url, out_file)
+    # 1-Bosqich: yt-dlp client spoofing
+    logging.info(f"🚀 yt-dlp client orqali yuklanmoqda: {target_url}")
+    file_path, title = await asyncio.to_thread(_download_ytdlp_client_sync, target_url, file_prefix, track_title)
     if file_path:
-        return file_path, track_title or "Audio Track", None
+        return file_path, title, None
 
     # 2-Bosqich: Piped API
     logging.info(f"🚀 Piped API orqali yuklanmoqda: {video_id}")
@@ -202,11 +199,12 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
     if file_path:
         return file_path, track_title or "Audio Track", None
 
-    # 4-Bosqich: yt-dlp client spoofing (iOS, TV va Web-creator mijozlari bilan)
-    logging.info(f"🚀 yt-dlp client orqali yuklanmoqda: {target_url}")
-    file_path, title = await asyncio.to_thread(_download_ytdlp_client_sync, target_url, file_prefix, track_title)
-    if file_path:
-        return file_path, title, None
+    # 4-Bosqich: Cobalt API
+    if COBALT_INSTANCES:
+        logging.info(f"🚀 Cobalt API orqali yuklanmoqda: {target_url}")
+        file_path = await _download_via_cobalt(target_url, out_file)
+        if file_path:
+            return file_path, track_title or "Audio Track", None
 
     return None, "Audio Track", None
 
@@ -214,7 +212,9 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
     payload = {"url": target_url, "downloadMode": "audio", "audioFormat": "mp3"}
     headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
-    
+    if COBALT_API_KEY:
+        headers["Authorization"] = f"Api-Key {COBALT_API_KEY}"
+
     for instance in COBALT_INSTANCES:
         try:
             async with get_session() as session:
@@ -293,11 +293,12 @@ async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
 
 
 def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
-    # YouTube Bot Protectionni aylanib o'tuvchi Player Client ro'yxati
     client_configs = [
+        ['web'],
         ['ios', 'mweb'],
         ['android', 'tv'],
-        ['web_creator']
+        ['web_creator'],
+        ['tv_embedded'],
     ]
 
     for clients in client_configs:
@@ -353,6 +354,9 @@ async def download_media(url: str) -> dict:
         try:
             payload = {"url": url, "downloadMode": "auto"}
             headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
+            if COBALT_API_KEY:
+                headers["Authorization"] = f"Api-Key {COBALT_API_KEY}"
+
             async with get_session() as session:
                 async with session.post(instance, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status in (200, 201):
