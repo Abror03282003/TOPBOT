@@ -1,4 +1,5 @@
 import os
+import time
 import glob
 import shutil
 import asyncio
@@ -43,25 +44,69 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_FILE = os.path.join(DOWNLOAD_DIR, "cookies.txt")
 raw_cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
 
+
+def _validate_cookie_format(text: str) -> bool:
+    """yt-dlp faqat Netscape HTTP Cookie File formatini tushunadi.
+    Boshqa formatdagi (masalan JSON yoki brauzer eksport qilgan boshqa
+    ko'rinishdagi) matn jimgina e'tiborsiz qoldiriladi va bot cookie'siz
+    ishlayotgandek xatolikka uchraydi. Shu yerda erta tekshiramiz."""
+    if not text:
+        return False
+    first_line = text.strip().splitlines()[0].strip() if text.strip() else ""
+    if first_line.startswith("# Netscape HTTP Cookie File") or first_line.startswith("# HTTP Cookie File"):
+        return True
+    # Ba'zan eksport vositalari sarlavha izohini qo'shmaydi, lekin qatorlar
+    # tab bilan ajratilgan 7 ustunli bo'lishi kerak (Netscape formati).
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if len(line.split("\t")) == 7:
+            return True
+        break
+    return False
+
+
 if raw_cookies:
-    try:
-        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
-            f.write(raw_cookies)
-        logging.info("✅ YouTube cookies.txt fayli yaratildi.")
-    except Exception as e:
-        logging.error(f"Cookies faylini yozishda xatolik: {e}")
+    if _validate_cookie_format(raw_cookies):
+        try:
+            with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+                if not raw_cookies.startswith("# Netscape") and not raw_cookies.startswith("# HTTP"):
+                    f.write("# Netscape HTTP Cookie File\n")
+                f.write(raw_cookies)
+            logging.info("✅ YouTube cookies.txt fayli yaratildi (format to'g'ri).")
+        except Exception as e:
+            logging.error(f"Cookies faylini yozishda xatolik: {e}")
+            COOKIES_FILE = None
+    else:
+        logging.error(
+            "❌ YOUTUBE_COOKIES formati noto'g'ri! yt-dlp faqat Netscape "
+            "HTTP Cookie File formatini qabul qiladi (birinchi qatori "
+            "'# Netscape HTTP Cookie File' bo'lishi kerak, qatorlar TAB "
+            "bilan ajratilgan 7 ustundan iborat bo'lishi kerak). Brauzer "
+            "kengaytmasi 'Get cookies.txt LOCALLY' orqali qaytadan eksport "
+            "qiling. Cookie ishlatilmaydi."
+        )
         COOKIES_FILE = None
 else:
     COOKIES_FILE = None
+    logging.warning("⚠️ YOUTUBE_COOKIES o'rnatilmagan — bot cookie'siz ishlaydi, bloklanish ehtimoli yuqori.")
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Dynamic Public Instance'lar
+# ---------------------------------------------------------------------------
+# PIPED / INVIDIOUS INSTANCE RO'YXATI (dinamik yangilanadi)
+# ---------------------------------------------------------------------------
+# Bular faqat "urug'" (seed) ro'yxat — startdan keyin _refresh_instances()
+# haqiqiy tirik instance ro'yxatini olishga harakat qiladi. Agar internetdan
+# olib bo'lmasa, shu statik ro'yxat zaxira sifatida ishlatiladi.
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://pipedapi-libre.kavin.rocks",
     "https://piped-api.lunar.icu",
     "https://api.piped.yt",
+    "https://pipedapi.adminforge.de",
+    "https://pipedapi.leptons.xyz",
 ]
 
 INVIDIOUS_INSTANCES = [
@@ -69,10 +114,87 @@ INVIDIOUS_INSTANCES = [
     "https://invidious.nerdvpn.de",
     "https://iv.melmac.space",
     "https://invidious.jing.rocks",
+    "https://invidious.f5.si",
+    "https://yewtu.be",
 ]
 
+_INSTANCES_LAST_REFRESH = 0
+_INSTANCE_REFRESH_INTERVAL = 6 * 60 * 60  # 6 soatda bir marta yangilash
+_instance_lock = asyncio.Lock()
+
+
+async def _refresh_instances() -> None:
+    """Piped/Invidious instance ro'yxatini jonli manbadan yangilaydi.
+    Ishlamasa, mavjud (statik) ro'yxat o'z holicha qoladi — bot hech qachon
+    bu tufayli to'xtab qolmaydi."""
+    global PIPED_INSTANCES, INVIDIOUS_INSTANCES, _INSTANCES_LAST_REFRESH
+
+    now = time.time()
+    if now - _INSTANCES_LAST_REFRESH < _INSTANCE_REFRESH_INTERVAL:
+        return
+
+    async with _instance_lock:
+        if now - _INSTANCES_LAST_REFRESH < _INSTANCE_REFRESH_INTERVAL:
+            return
+
+        new_invidious = []
+        new_piped = []
+
+        try:
+            async with get_session() as session:
+                async with session.get(
+                    "https://api.invidious.io/instances.json?sort_by=type,health",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for _, info in data:
+                            if info.get("type") == "https" and info.get("api"):
+                                uri = info.get("uri", "").rstrip("/")
+                                if uri:
+                                    new_invidious.append(uri)
+        except Exception as e:
+            logging.warning(f"Invidious instance ro'yxatini yangilab bo'lmadi: {e}")
+
+        try:
+            async with get_session() as session:
+                async with session.get(
+                    "https://piped-instances.kavin.rocks/",
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for info in data:
+                            api_url = info.get("api_url", "").rstrip("/")
+                            if api_url:
+                                new_piped.append(api_url)
+        except Exception as e:
+            logging.warning(f"Piped instance ro'yxatini yangilab bo'lmadi: {e}")
+
+        if new_invidious:
+            INVIDIOUS_INSTANCES = new_invidious[:8] + INVIDIOUS_INSTANCES
+            INVIDIOUS_INSTANCES = list(dict.fromkeys(INVIDIOUS_INSTANCES))  # dublikatlarni olib tashlash
+            logging.info(f"✅ {len(new_invidious)} ta Invidious instance topildi.")
+
+        if new_piped:
+            PIPED_INSTANCES = new_piped[:8] + PIPED_INSTANCES
+            PIPED_INSTANCES = list(dict.fromkeys(PIPED_INSTANCES))
+            logging.info(f"✅ {len(new_piped)} ta Piped instance topildi.")
+
+        _INSTANCES_LAST_REFRESH = now
+
+
 COBALT_API_KEY = os.environ.get("COBALT_API_KEY", "").strip()
-COBALT_INSTANCES = ["https://api.cobalt.tools"] if COBALT_API_KEY else []
+# Kalit bo'lmasa ham ba'zi ochiq Cobalt instance'lar ishlaydi (limitli);
+# shuning uchun ro'yxatni butunlay bo'shatib qo'ymaymiz.
+COBALT_INSTANCES = ["https://api.cobalt.tools"]
+if not COBALT_API_KEY:
+    logging.warning(
+        "⚠️ COBALT_API_KEY o'rnatilmagan — cobalt.tools so'rovlari "
+        "cheklangan/ishlamasligi mumkin. https://cobalt.tools dan yoki "
+        "o'zingiz self-host qilgan instance'dan kalit oling."
+    )
+
 
 def format_duration(seconds) -> str:
     if not seconds:
@@ -82,9 +204,11 @@ def format_duration(seconds) -> str:
     except Exception:
         return "0:00"
 
+
 def get_session():
     connector = aiohttp.TCPConnector(ssl=False)
     return aiohttp.ClientSession(connector=connector, headers={"User-Agent": USER_AGENT})
+
 
 # ---------------------------------------------------------------------------
 # QIDIRUV FUNKSIYALARI
@@ -110,12 +234,14 @@ def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
             'skip_download': True,
             'extractor_args': {
                 'youtube': {
+                    # mobil client'lar odatda web-cookie'siz ham ishlaydi va
+                    # bot-tekshiruviga kamroq uchraydi
                     'player_client': ['ios', 'android', 'mweb'],
                 }
             }
         }
-        if COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
-            opts['cookiefile'] = COOKIES_FILE
+        # Qidiruvda cookie shart emas va mobil client bilan aralashib,
+        # ziddiyat keltirib chiqarishi mumkin — shu sabab bu yerda ishlatilmaydi.
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -160,12 +286,13 @@ def _search_soundcloud_sync(query: str, limit: int) -> list[dict]:
         pass
     return []
 
+
 # ---------------------------------------------------------------------------
 # YUKLASH FUNKSIYALARI
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
     track_id = str(video_id_or_url)
-    
+
     cached_file_id = await get_cached_file(track_id)
     if cached_file_id:
         return None, "Audio Track", cached_file_id
@@ -180,6 +307,12 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
         file_prefix = f"audio_{abs(hash(track_id))}"
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+
+    # Instance ro'yxatini fon rejimida yangilashga urinib ko'ramiz (bloklamaydi)
+    try:
+        await asyncio.wait_for(_refresh_instances(), timeout=10)
+    except Exception:
+        pass
 
     # 1-Bosqich: yt-dlp client spoofing
     logging.info(f"🚀 yt-dlp client orqali yuklanmoqda: {target_url}")
@@ -206,6 +339,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
         if file_path:
             return file_path, track_title or "Audio Track", None
 
+    logging.error(f"❌ Barcha usullar muvaffaqiyatsiz tugadi: {target_url}")
     return None, "Audio Track", None
 
 
@@ -231,6 +365,8 @@ async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
                                     if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
                                         logging.info("✅ Cobalt API orqali muvaffaqiyatli yuklandi.")
                                         return out_file
+                    else:
+                        logging.warning(f"Cobalt ({instance}) status: {resp.status}")
         except Exception as e:
             logging.warning(f"Cobalt ({instance}) xatosi: {e}")
             continue
@@ -243,21 +379,25 @@ async def _download_via_piped(video_id: str, out_file: str) -> str | None:
             api_url = f"{instance}/streams/{video_id}"
             async with get_session() as session:
                 async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        audio_streams = data.get("audioStreams", [])
-                        if audio_streams:
-                            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
-                            download_url = best_audio.get("url")
-                            if download_url:
-                                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
-                                    if file_resp.status == 200:
-                                        with open(out_file, 'wb') as f:
-                                            async for chunk in file_resp.content.iter_chunked(16384):
-                                                f.write(chunk)
-                                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
-                                            logging.info("✅ Piped API orqali muvaffaqiyatli yuklandi.")
-                                            return out_file
+                    if resp.status != 200:
+                        logging.warning(f"Piped ({instance}) status: {resp.status}")
+                        continue
+                    data = await resp.json()
+                    audio_streams = data.get("audioStreams", [])
+                    if not audio_streams:
+                        continue
+                    best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                    download_url = best_audio.get("url")
+                    if not download_url:
+                        continue
+                    async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                        if file_resp.status == 200:
+                            with open(out_file, 'wb') as f:
+                                async for chunk in file_resp.content.iter_chunked(16384):
+                                    f.write(chunk)
+                            if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                logging.info(f"✅ Piped API orqali muvaffaqiyatli yuklandi ({instance}).")
+                                return out_file
         except Exception as e:
             logging.warning(f"Piped ({instance}) xatosi: {e}")
             continue
@@ -270,22 +410,26 @@ async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
             api_url = f"{instance}/api/v1/videos/{video_id}"
             async with get_session() as session:
                 async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        adaptive_formats = data.get("adaptiveFormats", [])
-                        audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio/")]
-                        if audio_streams:
-                            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
-                            download_url = best_audio.get("url")
-                            if download_url:
-                                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
-                                    if file_resp.status == 200:
-                                        with open(out_file, 'wb') as f:
-                                            async for chunk in file_resp.content.iter_chunked(16384):
-                                                f.write(chunk)
-                                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
-                                            logging.info("✅ Invidious API orqali muvaffaqiyatli yuklandi.")
-                                            return out_file
+                    if resp.status != 200:
+                        logging.warning(f"Invidious ({instance}) status: {resp.status}")
+                        continue
+                    data = await resp.json()
+                    adaptive_formats = data.get("adaptiveFormats", [])
+                    audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio/")]
+                    if not audio_streams:
+                        continue
+                    best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                    download_url = best_audio.get("url")
+                    if not download_url:
+                        continue
+                    async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                        if file_resp.status == 200:
+                            with open(out_file, 'wb') as f:
+                                async for chunk in file_resp.content.iter_chunked(16384):
+                                    f.write(chunk)
+                            if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                logging.info(f"✅ Invidious API orqali muvaffaqiyatli yuklandi ({instance}).")
+                                return out_file
         except Exception as e:
             logging.warning(f"Invidious ({instance}) xatosi: {e}")
             continue
@@ -293,15 +437,20 @@ async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
 
 
 def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
+    # Mobil/embedded client'lar odatda bot-tekshiruviga kamroq uchraydi va
+    # cookie talab qilmaydi — shularni birinchi navbatda sinaymiz.
+    # 'web' eng ko'p bloklanadigan client bo'lgani uchun oxiriga suramiz,
+    # va faqat shunda (haqiqiy) cookie mavjud bo'lsa unga cookie beramiz.
     client_configs = [
-        ['web'],
-        ['ios', 'mweb'],
-        ['android', 'tv'],
-        ['web_creator'],
-        ['tv_embedded'],
+        (['ios'], False),
+        (['android'], False),
+        (['tv_embedded'], False),
+        (['mweb'], False),
+        (['web_creator'], True),
+        (['web'], True),
     ]
 
-    for clients in client_configs:
+    for clients, use_cookies in client_configs:
         try:
             opts = {
                 'format': 'ba/b',
@@ -320,7 +469,7 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
                 }
             }
 
-            if COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+            if use_cookies and COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
                 opts['cookiefile'] = COOKIES_FILE
 
             if FFMPEG_PATH:
@@ -334,7 +483,7 @@ def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(target_url, download=True)
                 title = info.get('title', track_title or 'Audio Track') if info else 'Audio Track'
-                
+
                 for f in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")):
                     if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
                         return f, title
@@ -349,6 +498,11 @@ async def download_media(url: str) -> dict:
     url = url.strip()
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
     v_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
+
+    try:
+        await asyncio.wait_for(_refresh_instances(), timeout=10)
+    except Exception:
+        pass
 
     for instance in COBALT_INSTANCES:
         try:
@@ -370,7 +524,10 @@ async def download_media(url: str) -> dict:
                                             f.write(chunk)
                                     if os.path.exists(v_file) and os.path.getsize(v_file) > 10240:
                                         return {"file_path": v_file, "title": "Video", "id": file_prefix}
-        except Exception:
+                    else:
+                        logging.warning(f"Cobalt ({instance}) status: {resp.status}")
+        except Exception as e:
+            logging.warning(f"Cobalt media ({instance}) xatosi: {e}")
             continue
 
     return {"file_path": None, "title": "Video", "id": None}
