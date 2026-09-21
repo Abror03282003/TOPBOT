@@ -5,7 +5,7 @@ providers = ["python"]
 PYTHON_VERSION = "3.11"
  
 [phases.setup]
-nixPkgs = ["python311"]
+nixPkgs = ["python311", "nodejs_20", "git"]
 aptPkgs = ["ffmpeg"]
  
 [phases.install]
@@ -13,9 +13,10 @@ cmds = [
   "python -m venv --copies /opt/venv",
   ". /opt/venv/bin/activate && pip install --upgrade pip",
   ". /opt/venv/bin/activate && pip install -r requirements.txt",
-  ". /opt/venv/bin/activate && pip install -U --pre 'yt-dlp[default]'"
+  ". /opt/venv/bin/activate && pip install -U --pre 'yt-dlp[default]'",
+  "git clone --single-branch --branch 2.0.0 --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git $HOME/bgutil-ytdlp-pot-provider || true",
+  "sh -c 'cd $HOME/bgutil-ytdlp-pot-provider/server && npm ci && npx tsc' || true"
 ]
  
 [start]
 cmd = "python bot.py"
- 
