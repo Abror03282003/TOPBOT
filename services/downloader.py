@@ -21,7 +21,7 @@ DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = "cookies.txt"
 
-# Qidiruv natijalarini xotirada saqlash uchun kesh (In-memory Cache)
+# Qidiruv natijalarini xotirada saqlash uchun kesh
 SEARCH_CACHE = {}
 
 BASE_YDL_OPTS = {
@@ -67,10 +67,8 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    """Keshlash qo'shilgan qidiruv funksiyasi."""
     clean_query = query.strip().lower()
     
-    # 1. Keshni tekshirish (Agar avval qidirilgan bo'lsa, xotiradan beradi)
     if clean_query in SEARCH_CACHE:
         logging.info(f"Qidiruv keshdan olindi: {clean_query}")
         return SEARCH_CACHE[clean_query]
@@ -100,7 +98,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                                 'uploader': entry.get('uploader', 'Unknown Artist')
                             })
                 if results:
-                    SEARCH_CACHE[clean_query] = results  # Keshga saqlash
+                    SEARCH_CACHE[clean_query] = results
                     return results
         except Exception as e:
             logging.error(f"YouTube search error: {e}")
@@ -121,7 +119,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                                 'uploader': entry.get('uploader', 'Unknown Artist')
                             })
                 if results:
-                    SEARCH_CACHE[clean_query] = results  # Keshga saqlash
+                    SEARCH_CACHE[clean_query] = results
                 return results
         except Exception as e:
             logging.error(f"SoundCloud search error: {e}")
@@ -138,23 +136,24 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         url = f"https://www.youtube.com/watch?v={video_id_or_url}"
         file_prefix = str(video_id_or_url)
 
-    # KESH TEKSHIRUVI: Fayl diskda allaqachon mavjud bo'lsa, yuklamasdan qaytaradi
+    # KESH TEKSHIRUVI
     pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
     files = glob.glob(pattern)
     for f in files:
         if os.path.getsize(f) > 0 and not f.endswith(('.part', '.ytdl')):
-            logging.info(f"Qo'shiq keshdan (diskdan) olindi: {f}")
+            logging.info(f"Qo'shiq keshdan olindi: {f}")
             return f, "Audio Track"
 
     def _download():
         title = "Audio Track"
 
+        # 1-Urinish: universal formatlar ro'yxati va mweb/android client
         ydl_opts_mp3 = _get_active_opts({
-            'format': 'bestaudio/ba/best',
+            'format': 'bestaudio/ba/m4a/mp3/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb']
+                    'player_client': ['mweb', 'android', 'web']
                 }
             },
             'postprocessors': [{
@@ -172,20 +171,25 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         except Exception as e:
             logging.error(f"1-bosqich (MP3) yuklash xatosi: {e}")
 
-        pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
         files = glob.glob(pattern)
         for f in files:
             if os.path.getsize(f) > 0 and not f.endswith(('.part', '.ytdl')):
                 return f, title
 
+        # 2-Urinish: agar muammo bo'lsa, har qanday eng kichik video/audio oqimni olish
         ydl_opts_raw = _get_active_opts({
-            'format': 'bestaudio/best',
+            'format': 'worst/best',
             'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios']
+                    'player_client': ['android', 'ios', 'web']
                 }
-            }
+            },
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '128',
+            }],
         })
 
         try:
@@ -209,12 +213,11 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 async def download_media(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
     
-    # KESH TEKSHIRUVI: Video diskda allaqachon bo'lsa, uni qaytaradi
     pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
     files = glob.glob(pattern)
     for f in files:
         if os.path.getsize(f) > 0 and not f.endswith(('.part', '.ytdl')):
-            logging.info(f"Video keshdan (diskdan) olindi: {f}")
+            logging.info(f"Video keshdan olindi: {f}")
             return {
                 "file_path": f,
                 "title": "Video",
