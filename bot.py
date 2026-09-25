@@ -34,7 +34,6 @@ except Exception:
 from aiogram import Bot, Dispatcher
 from database import init_db
 from handlers import start, download, admin, referral, shazam  # <-- shazam qo'shildi
-from services.downloader import log_pot_diagnostics
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
