@@ -50,7 +50,6 @@ async def main():
 
     # PO Token / JS Challenge provider'lar haqiqatda ishlayaptimi — buni
     # fon rejimida (botni bloklamasdan) tekshirib, loglarga chiqaramiz.
-    asyncio.create_task(asyncio.to_thread(log_pot_diagnostics))
 
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
