@@ -31,6 +31,7 @@ except Exception:
     pass
 
 # 3. Qolgan kutubxona va modullarni import qilish
+from youtube_downloader import download_youtube_audio
 from aiogram import Bot, Dispatcher
 from database import init_db
 from handlers import start, download, admin, referral, shazam  # <-- shazam qo'shildi
