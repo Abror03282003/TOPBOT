@@ -7,7 +7,6 @@ import subprocess
 import requests
 import yt_dlp
 
-# FFMPEG va FFPROBE joylashuvini aniqlash
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -24,12 +23,13 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 SEARCH_CACHE = {}
 
-# Cobalt va YTDL proxy API lari
+# Rasmiy va faol Cobalt API instansiyalari
 COBALT_INSTANCES = [
     "https://api.cobalt.tools/",
-    "https://cobalt-api.kwiatekm.com/",
-    "https://co.wuk.sh/"
+    "https://cobalt.api.scity.gov.tw/",
+    "https://cobalt.v0.co/"
 ]
+
 
 def format_duration(seconds: int) -> str:
     if not seconds:
@@ -104,7 +104,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
 
 
 def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
-    """Cobalt API orqali yuklash (Server IP-blokini chetlab o'tadi)"""
+    """Rasmiy Cobalt API orqali yuklash"""
     payload = {
         "url": target_url,
         "downloadMode": "audio",
@@ -120,7 +120,7 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
 
     for api_url in COBALT_INSTANCES:
         try:
-            res = requests.post(api_url, json=payload, headers=headers, timeout=10)
+            res = requests.post(api_url, json=payload, headers=headers, timeout=12)
             if res.status_code in (200, 201):
                 data = res.json()
                 download_url = data.get("url") if data.get("status") in ["tunnel", "redirect"] else None
@@ -135,7 +135,7 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
                                 logging.info(f"✅ Cobalt API ({api_url}) orqali yuklandi.")
                                 return True, "Audio Track"
         except Exception as e:
-            logging.warning(f"Cobalt API ({api_url}) muammosi: {e}")
+            logging.warning(f"Cobalt API ({api_url}) xatolik: {e}")
             continue
         finally:
             if os.path.exists(temp_raw):
@@ -146,8 +146,8 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
     return False, "Audio Track"
 
 
-def _download_via_ytdlp_fallback(target_url: str, out_file: str) -> tuple[bool, str]:
-    """Android / iOS Client Emulation orqali zaxira yuklash"""
+def _download_via_ytdlp_bypass(target_url: str, out_file: str) -> tuple[bool, str]:
+    """yt-dlp ning TV / Embed / Web_creator client emulyatsiyasi (Bot-checkni aylanib o'tadi)"""
     try:
         ydl_opts = {
             'format': 'ba/ba*/bestaudio/best',
@@ -157,7 +157,7 @@ def _download_via_ytdlp_fallback(target_url: str, out_file: str) -> tuple[bool, 
             'overwrites': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb']
+                    'player_client': ['tvhtml5', 'web_creator', 'android']
                 }
             }
         }
@@ -174,7 +174,6 @@ def _download_via_ytdlp_fallback(target_url: str, out_file: str) -> tuple[bool, 
             info = ydl.extract_info(target_url, download=True)
             title = info.get('title', 'Audio Track') if info else 'Audio Track'
             
-            # Faylni izlash va qayta nomlash
             base_prefix = out_file.replace('.mp3', '')
             for f in glob.glob(f"{base_prefix}.*"):
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
@@ -185,12 +184,51 @@ def _download_via_ytdlp_fallback(target_url: str, out_file: str) -> tuple[bool, 
                             shutil.move(f, out_file)
                     return True, title
     except Exception as e:
-        logging.error(f"YT-DLP fallback xatosi: {e}")
+        logging.error(f"YT-DLP bypass xatosi: {e}")
 
     return False, "Audio Track"
 
 
-async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
+def _download_via_soundcloud_fallback(track_title: str, out_file: str) -> tuple[bool, str]:
+    """YouTube butunlay blok bo'lsa, SoundCloud orqali qidirib yuklash"""
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': out_file + ".%(ext)s",
+            'quiet': True,
+            'no_warnings': True,
+            'overwrites': True,
+        }
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            ydl_opts['ffmpeg_location'] = FFMPEG_PATH
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"scsearch1:{track_title}", download=True)
+            if info and 'entries' in info and info['entries']:
+                entry = info['entries'][0]
+                title = entry.get('title', track_title)
+                base_prefix = out_file.replace('.mp3', '')
+                for f in glob.glob(f"{base_prefix}.*"):
+                    if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                        if not f.endswith('.mp3'):
+                            _convert_to_clean_mp3(f, out_file)
+                        else:
+                            if f != out_file:
+                                shutil.move(f, out_file)
+                        logging.info("✅ SoundCloud zaxirasi orqali yuklandi.")
+                        return True, title
+    except Exception as e:
+        logging.error(f"SoundCloud fallback xatosi: {e}")
+
+    return False, "Audio Track"
+
+
+async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str]:
     if str(video_id_or_url).startswith("http"):
         target_url = video_id_or_url
         file_prefix = "track_" + str(abs(hash(video_id_or_url)))[-8:]
@@ -200,21 +238,26 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-    # 1. Keshni tekshirish
     if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
         logging.info(f"Qo'shiq keshdan olindi: {out_file}")
-        return out_file, "Audio Track"
+        return out_file, track_title or "Audio Track"
 
     def _download():
-        # 1-Bosqich: Cobalt API bilan yuklash
+        # 1-Bosqich: Cobalt API
         success, title = _download_via_cobalt(target_url, out_file)
         if success:
             return out_file, title
 
-        # 2-Bosqich: YT-DLP Mobile Client Emulation
-        success, title = _download_via_ytdlp_fallback(target_url, out_file)
+        # 2-Bosqich: yt-dlp tvhtml5 / web_creator client bypass
+        success, title = _download_via_ytdlp_bypass(target_url, out_file)
         if success:
             return out_file, title
+
+        # 3-Bosqich: SoundCloud zaxirasi (agar YouTube butunlay IP blok qilgan bo'lsa)
+        if track_title:
+            success, title = _download_via_soundcloud_fallback(track_title, out_file)
+            if success:
+                return out_file, title
 
         return None, "Audio Track"
 
