@@ -3,231 +3,361 @@ import glob
 import shutil
 import asyncio
 import logging
-import time
+import uuid
+import aiohttp
 import yt_dlp
 from pydub import AudioSegment
-from database import get_cached_file, save_to_cache
+from database import get_cached_file
 
-FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
-FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
+__all__ = ["search_tracks", "download_audio_by_id", "download_media"]
 
-if not os.path.exists(FFMPEG_PATH):
+logging.basicConfig(level=logging.INFO)
+
+# ---------------------------------------------------------------------------
+# 1. FFmpeg va FFprobe sozlamalari
+# ---------------------------------------------------------------------------
+FFMPEG_PATH = shutil.which("ffmpeg")
+FFPROBE_PATH = shutil.which("ffprobe")
+
+if not FFMPEG_PATH:
     try:
         import imageio_ffmpeg
         FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-        ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
-        possible_ffprobe = os.path.join(ffmpeg_dir, "ffprobe")
-        if os.path.exists(possible_ffprobe):
-            FFPROBE_PATH = possible_ffprobe
-        else:
-            FFPROBE_PATH = FFMPEG_PATH
-    except Exception as e:
-        logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
+    except Exception:
+        pass
 
-if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+if not FFPROBE_PATH and FFMPEG_PATH:
+    candidate = os.path.join(os.path.dirname(FFMPEG_PATH), "ffprobe")
+    FFPROBE_PATH = candidate if os.path.exists(candidate) else FFMPEG_PATH
+
+if FFMPEG_PATH:
     AudioSegment.converter = FFMPEG_PATH
-if FFPROBE_PATH and os.path.exists(FFPROBE_PATH):
+if FFPROBE_PATH:
     AudioSegment.ffprobe = FFPROBE_PATH
 
+# Yuklash papkasi
 DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-COOKIES_PATH = os.path.join(DOWNLOAD_DIR, "cookies.txt")
 
-BASE_YDL_OPTS = {
-    'quiet': True,
-    'no_warnings': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': True,
-    'geo_bypass': True,
-}
+# Cookies sozlamasi
+COOKIES_FILE = os.path.join(DOWNLOAD_DIR, "cookies.txt")
+raw_cookies = os.environ.get("YOUTUBE_COOKIES", "").strip()
 
-if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-    BASE_YDL_OPTS['ffmpeg_location'] = FFMPEG_PATH
+if raw_cookies:
+    try:
+        with open(COOKIES_FILE, "w", encoding="utf-8") as f:
+            f.write(raw_cookies)
+        logging.info("✅ YouTube cookies.txt fayli yaratildi.")
+    except Exception as e:
+        logging.error(f"Cookies faylini yozishda xatolik: {e}")
+        COOKIES_FILE = None
+else:
+    COOKIES_FILE = None
 
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-def _ensure_cookies_file():
-    cookies_env = os.environ.get("YOUTUBE_COOKIES")
-    if cookies_env:
-        cookies_env_cleaned = cookies_env.strip()
-        if os.path.exists(COOKIES_PATH):
-            try:
-                with open(COOKIES_PATH, "r", encoding="utf-8") as f:
-                    if f.read().strip() == cookies_env_cleaned:
-                        return
-            except Exception:
-                pass
-        try:
-            with open(COOKIES_PATH, "w", encoding="utf-8") as f:
-                f.write(cookies_env_cleaned)
-            logging.info("✅ Cookies fayli YOUTUBE_COOKIES dan yaratildi.")
-        except Exception as e:
-            logging.error(f"Cookies yozishda xatolik: {e}")
+# Faol API instansiyalari
+PIPED_INSTANCES = [
+    "https://pipedapi.mha.fi",
+    "https://piped-api.garudalinux.org",
+    "https://pipedapi.lunar.icu",
+    "https://pipedapi.smnz.de",
+    "https://pipedapi.palvelu.org"
+]
 
+INVIDIOUS_INSTANCES = [
+    "https://invidious.drgns.space",
+    "https://inv.us.projectsegfau.lt",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.einfachzocken.eu"
+]
 
-def _get_active_opts(extra_opts: dict) -> dict:
-    _ensure_cookies_file()
-    opts = {**BASE_YDL_OPTS, **extra_opts}
-    if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
-        opts['cookiefile'] = COOKIES_PATH
-    return opts
+COBALT_INSTANCES = [
+    "https://api.cobalt.tools",
+    "https://cobalt.qtfy.eu"
+]
 
-
-def format_duration(seconds: int) -> str:
+def format_duration(seconds) -> str:
     if not seconds:
         return "0:00"
-    minutes = int(seconds) // 60
-    secs = int(seconds) % 60
-    return f"{minutes}:{secs:02d}"
-
-
-async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    search_opts = _get_active_opts({
-        'extract_flat': True,
-        'skip_download': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'mweb']
-            }
-        }
-    })
-
-    def _search():
-        # 1. YouTube Qidiruvi
-        try:
-            with yt_dlp.YoutubeDL(search_opts) as ydl:
-                res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-                results = []
-                if res and 'entries' in res and res['entries']:
-                    for entry in res['entries']:
-                        if entry and entry.get('id'):
-                            results.append({
-                                'id': entry.get('id'),
-                                'title': entry.get('title', 'Unknown Title'),
-                                'duration': format_duration(entry.get('duration', 0)),
-                                'uploader': entry.get('uploader', 'YouTube')
-                            })
-                if results:
-                    return results
-        except Exception as e:
-            logging.error(f"YouTube qidiruv xatosi: {e}")
-
-        # 2. SoundCloud Qidiruvi
-        try:
-            sc_opts = _get_active_opts({'extract_flat': True})
-            with yt_dlp.YoutubeDL(sc_opts) as ydl:
-                res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
-                results = []
-                if res and 'entries' in res and res['entries']:
-                    for entry in res['entries']:
-                        if entry:
-                            url_or_id = entry.get('url') or entry.get('webpage_url') or entry.get('id')
-                            results.append({
-                                'id': url_or_id,
-                                'title': entry.get('title', 'Unknown Title'),
-                                'duration': format_duration(entry.get('duration', 0)),
-                                'uploader': entry.get('uploader', 'SoundCloud')
-                            })
-                return results
-        except Exception as e:
-            logging.error(f"SoundCloud qidiruv xatosi: {e}")
-            return []
-
-    return await asyncio.to_thread(_search)
-
-
-def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[str | None, str]:
-    """YouTube IP bloklaganda, berilgan trek nomi bo'yicha SoundCloud'dan yuklaydi"""
-    if not search_title or search_title == "Audio Track":
-        return None, "Audio Track"
-
     try:
-        # Fayl nomlarining to'qnashmasligi uchun unikal ID qo'shamiz
-        unique_outtmpl = os.path.join(DOWNLOAD_DIR, f'{out_prefix}_sc_{int(time.time()*1000)}.%(ext)s')
-        
-        sc_opts = _get_active_opts({
-            'format': 'bestaudio/best',
-            'outtmpl': unique_outtmpl,
-            'default_search': 'scsearch',
-        })
-        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-            sc_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+    except Exception:
+        return "0:00"
 
-        with yt_dlp.YoutubeDL(sc_opts) as ydl:
-            info = ydl.extract_info(f"scsearch1:{search_title}", download=True)
-            if info and 'entries' in info and info['entries']:
-                entry = info['entries'][0]
-                title = entry.get('title', search_title)
-                
-                # Saqlangan MP3 faylini izlab topish
-                sc_files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{out_prefix}_sc_*.mp3"))
-                if sc_files:
-                    latest_file = max(sc_files, key=os.path.getmtime)
-                    if os.path.getsize(latest_file) > 10240:
-                        logging.info(f"✅ SoundCloud zaxirasi orqali trek yuklandi: {title}")
-                        return latest_file, title
-    except Exception as e:
-        logging.error(f"SoundCloud zaxira xatosi: {e}")
-    return None, search_title
+def get_session():
+    connector = aiohttp.TCPConnector(ssl=False)
+    return aiohttp.ClientSession(connector=connector, headers={"User-Agent": USER_AGENT})
+
+# ---------------------------------------------------------------------------
+# 2. QIDIRUV FUNKSIYALARI
+# ---------------------------------------------------------------------------
+async def search_tracks(query: str, limit: int = 20) -> list[dict]:
+    query = query.strip()
+    if not query:
+        return []
+
+    results = await asyncio.to_thread(_search_ytdlp_sync, query, limit)
+    if results:
+        return results
+
+    return await asyncio.to_thread(_search_soundcloud_sync, query, limit)
 
 
-async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
-    youtube_id = str(video_id_or_url)
-    
-    # Bazadan keshni tekshirish
-    cached_file_id = await get_cached_file(youtube_id)
-    if cached_file_id:
-        return None, track_title or "Audio Track", cached_file_id
-
-    # Aniq unikal fayl prefiksi
-    file_prefix = f"track_{youtube_id}_{int(time.time())}"
-
-    def _download():
-        title = track_title or "Audio Track"
-
-        # 1. YouTube orqali yuklab ko'rish
-        if str(video_id_or_url).startswith("http"):
-            url = video_id_or_url
-        else:
-            url = f"https://www.youtube.com/watch?v={video_id_or_url}"
-
-        ydl_opts_fast = _get_active_opts({
-            'format': 'ba/ba*/bestaudio/best',
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
+def _search_ytdlp_sync(query: str, limit: int) -> list[dict]:
+    try:
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'skip_download': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'tv', 'mweb']
+                    'player_client': ['tv', 'android'],
                 }
             }
-        })
+        }
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+            opts['cookiefile'] = COOKIES_FILE
 
-        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-            ydl_opts_fast['postprocessors'] = [{
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            items = []
+            if res and 'entries' in res:
+                for entry in res['entries']:
+                    if entry and entry.get('id'):
+                        items.append({
+                            'id': entry.get('id'),
+                            'title': entry.get('title', 'Unknown Track'),
+                            'duration': format_duration(entry.get('duration', 0)),
+                            'uploader': entry.get('uploader') or entry.get('channel') or 'YouTube'
+                        })
+            if items:
+                logging.info(f"✅ yt-dlp orqali {len(items)} ta qo'shiq topildi.")
+                return items
+    except Exception as e:
+        logging.warning(f"yt-dlp search xatosi: {e}")
+    return []
+
+
+def _search_soundcloud_sync(query: str, limit: int) -> list[dict]:
+    try:
+        opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True, 'skip_download': True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+            items = []
+            if res and 'entries' in res:
+                for entry in res['entries']:
+                    webpage_url = entry.get('webpage_url') or entry.get('url')
+                    if webpage_url:
+                        items.append({
+                            'id': webpage_url,
+                            'title': entry.get('title', 'Unknown Track'),
+                            'duration': format_duration(entry.get('duration', 0)),
+                            'uploader': entry.get('uploader') or 'SoundCloud',
+                        })
+            if items:
+                logging.info(f"✅ SoundCloud orqali {len(items)} ta qo'shiq topildi.")
+                return items
+    except Exception:
+        pass
+    return []
+
+# ---------------------------------------------------------------------------
+# 3. AUDIO YUKLASH FUNKSIYALARI
+# ---------------------------------------------------------------------------
+async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
+    track_id = str(video_id_or_url)
+    
+    cached_file_id = await get_cached_file(track_id)
+    if cached_file_id:
+        return None, "Audio Track", cached_file_id
+
+    if not track_id.startswith("http://") and not track_id.startswith("https://"):
+        target_url = f"https://www.youtube.com/watch?v={track_id}"
+        video_id = track_id
+        file_prefix = f"audio_{track_id}"
+    else:
+        target_url = track_id
+        video_id = track_id.split("v=")[-1].split("&")[0] if "v=" in track_id else track_id.split("/")[-1]
+        file_prefix = f"audio_{abs(hash(track_id))}"
+
+    out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+
+    # 1. Piped API
+    file_path = await _download_via_piped(video_id, out_file)
+    if file_path:
+        return file_path, track_title or "Audio Track", None
+
+    # 2. Invidious API
+    file_path = await _download_via_invidious(video_id, out_file)
+    if file_path:
+        return file_path, track_title or "Audio Track", None
+
+    # 3. Cobalt API
+    file_path = await _download_via_cobalt(target_url, out_file)
+    if file_path:
+        return file_path, track_title or "Audio Track", None
+
+    # 4. yt-dlp client spoofing
+    file_path, title = await asyncio.to_thread(_download_ytdlp_client_sync, target_url, file_prefix, track_title)
+    if file_path:
+        return file_path, title, None
+
+    return None, "Audio Track", None
+
+
+async def _download_via_piped(video_id: str, out_file: str) -> str | None:
+    for instance in PIPED_INSTANCES:
+        try:
+            api_url = f"{instance}/streams/{video_id}"
+            async with get_session() as session:
+                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        audio_streams = data.get("audioStreams", [])
+                        if audio_streams:
+                            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                            download_url = best_audio.get("url")
+                            if download_url:
+                                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                                    if file_resp.status == 200:
+                                        with open(out_file, 'wb') as f:
+                                            async for chunk in file_resp.content.iter_chunked(16384):
+                                                f.write(chunk)
+                                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                            return out_file
+        except Exception:
+            continue
+    return None
+
+
+async def _download_via_invidious(video_id: str, out_file: str) -> str | None:
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            async with get_session() as session:
+                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        adaptive_formats = data.get("adaptiveFormats", [])
+                        audio_streams = [f for f in adaptive_formats if f.get("type", "").startswith("audio/")]
+                        if audio_streams:
+                            best_audio = max(audio_streams, key=lambda x: int(x.get("bitrate", 0)))
+                            download_url = best_audio.get("url")
+                            if download_url:
+                                async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                                    if file_resp.status == 200:
+                                        with open(out_file, 'wb') as f:
+                                            async for chunk in file_resp.content.iter_chunked(16384):
+                                                f.write(chunk)
+                                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                            return out_file
+        except Exception:
+            continue
+    return None
+
+
+async def _download_via_cobalt(target_url: str, out_file: str) -> str | None:
+    payload = {"url": target_url, "downloadMode": "audio", "audioFormat": "mp3"}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": USER_AGENT}
+    
+    for instance in COBALT_INSTANCES:
+        try:
+            async with get_session() as session:
+                async with session.post(instance, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status in (200, 201):
+                        data = await resp.json()
+                        download_url = data.get("url")
+                        if download_url:
+                            async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                                if file_resp.status == 200:
+                                    with open(out_file, 'wb') as f:
+                                        async for chunk in file_resp.content.iter_chunked(16384):
+                                            f.write(chunk)
+                                    if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
+                                        return out_file
+        except Exception:
+            continue
+    return None
+
+
+def _download_ytdlp_client_sync(target_url: str, file_prefix: str, track_title: str = None) -> tuple[str | None, str]:
+    try:
+        opts = {
+            'format': 'ba/b',
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s"),
+            'overwrites': True,
+            'quiet': True,
+            'no_warnings': True,
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['tv', 'android'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': USER_AGENT,
+            }
+        }
+
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE) and os.path.getsize(COOKIES_FILE) > 0:
+            opts['cookiefile'] = COOKIES_FILE
+
+        if FFMPEG_PATH:
+            opts['ffmpeg_location'] = FFMPEG_PATH
+            opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
             }]
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info and isinstance(info, dict):
-                    title = info.get('title', title)
-        except Exception as e:
-            logging.error(f"YouTube yuklash xatosi: {e}")
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(target_url, download=True)
+            title = info.get('title', track_title or 'Audio Track') if info else 'Audio Track'
+            
+            for f in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")):
+                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                    return f, title
+    except Exception as e:
+        logging.error(f"yt-dlp yuklash xatosi: {e}")
 
-        expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
-        if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 10240:
-            return expected_mp3, title, None
+    return None, "Audio Track"
 
-        # 2. Agar YouTube bloklasa va video_id orqali nom chiqqan bo'lsa yoki track_title bo'lsa
-        sc_file, sc_title = _download_soundcloud_fallback(title, file_prefix)
-        if sc_file:
-            return sc_file, sc_title, None
+# ---------------------------------------------------------------------------
+# 4. MEDIA / VIDEO YUKLASH FUNKSIYASI (ImportError tuzatildi)
+# ---------------------------------------------------------------------------
+async def download_media(url: str) -> dict:
+    url = url.strip()
+    return await asyncio.to_thread(_download_media_sync, url)
 
-        return None, title, None
+def _download_media_sync(url: str) -> dict:
+    file_prefix = "video_" + str(abs(hash(url)))[-8:]
+    outtmpl = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.%(ext)s")
 
-    return await asyncio.to_thread(_download)
+    opts = {
+        'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best',
+        'outtmpl': outtmpl,
+        'overwrites': True,
+        'quiet': True,
+        'no_warnings': True,
+        'max_filesize': 50 * 1024 * 1024,
+        'user_agent': USER_AGENT
+    }
+
+    if FFMPEG_PATH:
+        opts['ffmpeg_location'] = FFMPEG_PATH
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            title = info.get('title', 'Video') if info else 'Video'
+            video_id = info.get('id', file_prefix) if info else file_prefix
+
+            pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
+            for f in glob.glob(pattern):
+                if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
+                    return {"file_path": f, "title": title, "id": video_id}
+    except Exception as e:
+        logging.error(f"Video yuklash xatosi: {e}")
+
+    return {"file_path": None, "title": "Video", "id": None}
