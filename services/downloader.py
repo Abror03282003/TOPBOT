@@ -19,11 +19,12 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
-# Ishchi va tekshirilgan API instansiyalari
-PIPED_INSTANCES = [
-    "https://pipedapi.kavin.rocks",
-    "https://api.piped.privacydev.net",
-    "https://pipedapi.palvelu.org"
+# Ishlayotgan va SSL muammosi bo'lmagan API manbalari
+INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.drgns.space",
+    "https://vid.puffyan.us"
 ]
 
 
@@ -37,88 +38,64 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (Piped API / YTMusic)
+# QIDIRUV (Invidious API - SSL ignore bilan)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     search_query = query.strip()
     if not search_query:
         return []
 
+    connector = aiohttp.TCPConnector(ssl=False)
     headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for instance in PIPED_INSTANCES:
+    
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+        for instance in INVIDIOUS_INSTANCES:
             try:
-                url = f"{instance}/search"
-                params = {"q": search_query, "filter": "music_songs"}
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                url = f"{instance}/api/v1/search"
+                params = {"q": search_query, "type": "video"}
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         results = []
-                        for entry in data.get("items", [])[:limit]:
-                            item_id = entry.get("url", "").replace("/watch?v=", "")
-                            if item_id:
+                        for entry in data[:limit]:
+                            if entry.get("videoId"):
                                 results.append({
-                                    'id': item_id,
+                                    'id': entry.get("videoId"),
                                     'title': entry.get("title", "Unknown"),
-                                    'duration': format_duration(entry.get("duration", 0)),
-                                    'uploader': entry.get("uploaderName", "YouTube Music")
+                                    'duration': format_duration(entry.get("lengthSeconds", 0)),
+                                    'uploader': entry.get("author", "YouTube")
                                 })
                         if results:
                             return results
             except Exception as e:
-                logging.warning(f"Piped qidiruv xatosi ({instance}): {e}")
+                logging.warning(f"Qidiruv xatosi ({instance}): {e}")
                 continue
 
-    # Zaxira qidiruv (yt-dlp flat extract)
-    return await asyncio.to_thread(_yt_search_fallback, search_query, limit)
-
-
-def _yt_search_fallback(query: str, limit: int) -> list[dict]:
-    import yt_dlp
-    opts = {
-        'extract_flat': True,
-        'skip_download': True,
-        'quiet': True,
-        'user_agent': USER_AGENT,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            items = []
-            if res and 'entries' in res:
-                for entry in res['entries']:
-                    if entry and entry.get('id'):
-                        items.append({
-                            'id': entry.get('id'),
-                            'title': entry.get('title', 'Unknown Track'),
-                            'duration': format_duration(entry.get('duration', 0)),
-                            'uploader': entry.get('uploader') or 'Artist'
-                        })
-            return items
-    except Exception as e:
-        logging.error(f"Fallback search xatosi: {e}")
-        return []
+    return []
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH (Cobalt / Piped Stream)
+# AUDIO YUKLASH (Invidious Stream & Cobalt)
 # ---------------------------------------------------------------------------
-async def _download_via_piped(video_id: str) -> str | None:
+async def _download_via_invidious(video_id: str) -> str | None:
+    connector = aiohttp.TCPConnector(ssl=False)
     headers = {"User-Agent": USER_AGENT}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for instance in PIPED_INSTANCES:
+    
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
+        for instance in INVIDIOUS_INSTANCES:
             try:
-                url = f"{instance}/streams/{video_id}"
+                url = f"{instance}/api/v1/videos/{video_id}"
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=6)) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json()
-                    audio_streams = data.get("audioStreams", [])
+                    adaptive = data.get("adaptiveFormats", [])
+                    audio_streams = [f for f in adaptive if "audio" in f.get("type", "")]
                     if not audio_streams:
                         continue
 
                     stream_url = audio_streams[0].get("url")
-                    ext = audio_streams[0].get("format", "m4a").lower()
+                    ext = audio_streams[0].get("container", "m4a").lower()
                     raw_path = os.path.join(DOWNLOAD_DIR, f"{video_id}_raw.{ext}")
 
                     async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=30)) as s_resp:
@@ -152,13 +129,14 @@ async def _download_via_cobalt(video_id: str) -> str | None:
         "audioFormat": "mp3",
         "audioBitrate": "192"
     }
+    connector = aiohttp.TCPConnector(ssl=False)
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": USER_AGENT
     }
 
-    async with aiohttp.ClientSession(headers=headers) as session:
+    async with aiohttp.ClientSession(connector=connector, headers=headers) as session:
         try:
             async with session.post("https://api.cobalt.tools/api/json", json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status in (200, 201):
@@ -185,12 +163,12 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None, *a
     
     title_result = track_title or "Audio Track"
 
-    # 1. Piped Stream orqali yuklash (Fast Direct Stream)
-    piped_path = await _download_via_piped(youtube_id)
-    if piped_path:
-        return piped_path, title_result, None
+    # 1. Direct Stream
+    inv_path = await _download_via_invidious(youtube_id)
+    if inv_path:
+        return inv_path, title_result, None
 
-    # 2. Cobalt API zaxirasi
+    # 2. Cobalt
     cobalt_path = await _download_via_cobalt(youtube_id)
     if cobalt_path:
         return cobalt_path, title_result, None
