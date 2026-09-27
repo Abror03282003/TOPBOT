@@ -3,7 +3,6 @@ import glob
 import shutil
 import asyncio
 import logging
-import requests
 import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
@@ -81,7 +80,6 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    # 1. YouTube Qidiruv (iOS va Android clientlari orqali)
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
@@ -93,6 +91,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
     })
 
     def _search():
+        # 1. YouTube Qidiruvi
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -111,7 +110,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         except Exception as e:
             logging.error(f"YouTube qidiruv xatosi: {e}")
 
-        # 2. SoundCloud Qidiruv Zaxirasi
+        # 2. SoundCloud Qidiruvi
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -136,11 +135,14 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[str | None, str]:
-    """YouTube IP blok berganida SoundCloud orqali trekni tortish"""
+    """YouTube IP blok berganda, aynan tanlangan trek nomi bo'yicha SoundCloud'dan yuklash"""
+    if not search_title or search_title == "Audio Track":
+        return None, "Audio Track"
+
     try:
         sc_opts = _get_active_opts({
             'format': 'bestaudio/best',
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{out_prefix}.%(ext)s'),
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{out_prefix}_sc.%(ext)s'),
         })
         if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
             sc_opts['postprocessors'] = [{
@@ -154,34 +156,34 @@ def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[s
             if info and 'entries' in info and info['entries']:
                 entry = info['entries'][0]
                 title = entry.get('title', search_title)
-                expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{out_prefix}.mp3")
+                expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{out_prefix}_sc.mp3")
                 if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 10240:
-                    logging.info("✅ SoundCloud zaxirasi orqali MP3 muvaffaqiyatli yuklandi.")
+                    logging.info(f"✅ SoundCloud zaxirasi orqali trek yuklandi: {title}")
                     return expected_mp3, title
     except Exception as e:
         logging.error(f"SoundCloud zaxira xatosi: {e}")
-    return None, "Audio Track"
+    return None, search_title
 
 
 async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
-    # Bazadan keshni tekshirish
+    # Keshni tekshirish
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, track_title or "Audio Track", cached_file_id
 
     if str(video_id_or_url).startswith("http"):
         url = video_id_or_url
-        file_prefix = "sc_" + str(abs(hash(video_id_or_url)))[-6:]
+        file_prefix = f"sc_{abs(hash(video_id_or_url))}"
     else:
         url = f"https://www.youtube.com/watch?v={video_id_or_url}"
-        file_prefix = str(video_id_or_url)
+        file_prefix = f"yt_{video_id_or_url}"
 
     def _download():
         title = track_title or "Audio Track"
 
-        # 1-Bosqich: yt-dlp iOS/TV clientlari bilan (Cookies'siz ham cheklovni aylanib o'tadi)
+        # 1. Avval YouTube orqali yuklashga urinish
         ydl_opts_fast = _get_active_opts({
             'format': 'ba/ba*/bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
@@ -205,7 +207,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
                 if info and isinstance(info, dict):
                     title = info.get('title', title)
         except Exception as e:
-            logging.error(f"YouTube 1-bosqich yuklash xatosi: {e}")
+            logging.error(f"YouTube yuklash xatosi: {e}")
 
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 10240:
@@ -217,14 +219,14 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
             if os.path.exists(f) and os.path.getsize(f) > 10240:
                 return f, title, None
 
-        # 2-Bosqich: Agar YouTube butunlay IP blok qilsa -> SoundCloud zaxirasidan tortish
+        # 2. Agar YouTube bloklasa, aynan tanlangan qo'shiq nomi bo'yicha SoundCloud'dan qidirib yuklaydi
         sc_file, sc_title = _download_soundcloud_fallback(title, file_prefix)
         if sc_file:
             return sc_file, sc_title, None
 
         return None, title, None
 
-    return await asyncio.to_thread(_download)
+    return await asyncio-to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
