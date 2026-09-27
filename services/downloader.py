@@ -7,7 +7,7 @@ import aiohttp
 from pydub import AudioSegment
 from youtube_downloader import download_youtube_audio
 
-# FFmpeg va FFprobe yo'llarini sozlash
+# FFmpeg va FFprobe yo'llarini avtomatik aniqlash
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -29,6 +29,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
 def format_duration(seconds) -> str:
+    """Saniyalarni MM:SS formatiga o'tkazadi."""
     if not seconds:
         return "0:00"
     try:
@@ -38,14 +39,13 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (Search)
+# QIDIRUV (Search) - YouTube va SoundCloud
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     query = query.strip()
     if not query:
         return []
     
-    # yt-dlp flat search (YouTube & SoundCloud)
     import yt_dlp
     
     def _search_sync():
@@ -61,7 +61,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
             }
         }
         
-        # 1-Urinish: YouTube
+        # 1-Urinish: YouTube bo'yicha qidirish
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -80,7 +80,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
         except Exception as e:
             logging.warning(f"YouTube search error: {e}")
 
-        # 2-Urinish: SoundCloud
+        # 2-Urinish: SoundCloud bo'yicha qidirish (agar YouTube ishlamasa)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
@@ -106,7 +106,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# COBALT API FALLBACK (Zaxira yuklovchi)
+# COBALT API FALLBACK (YouTube bloklaganda zaxira yuklovchi)
 # ---------------------------------------------------------------------------
 async def _download_via_cobalt(video_id_or_url: str) -> str | None:
     target_url = video_id_or_url if str(video_id_or_url).startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
@@ -153,33 +153,47 @@ async def _download_via_cobalt(video_id_or_url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH (Asosiy funksiya)
+# AUDIO YUKLASH (Asosiy funksiya - track_title, *args, **kwargs moslashtirilgan)
 # ---------------------------------------------------------------------------
-async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
+async def download_audio_by_id(video_id_or_url: str, track_title: str = None, *args, **kwargs) -> tuple[str | None, str, str | None]:
     """
-    1-Bosqich: youtube_downloader.py orqali (Cookies + yt-dlp)
-    2-Bosqich: Cobalt API (Agar YouTube bloklasa)
+    1-Bosqich: Keshni tekshirish (database.get_cached_file)
+    2-Bosqich: youtube_downloader.py orqali yuklash
+    3-Bosqich: Cobalt API zaxirasi
+    Qaytaradi: (fayl_yo'li, trek_nomi, cached_file_id)
     """
-    target_url = video_id_or_url if str(video_id_or_url).startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
+    youtube_id = str(video_id_or_url)
+    title_result = track_title or "Audio Track"
+
+    # 1. Keshni tekshirish (agar avval yuklangan bo'lsa)
+    try:
+        from database import get_cached_file
+        cached_file_id = await get_cached_file(youtube_id)
+        if cached_file_id:
+            return None, title_result, cached_file_id
+    except Exception as e:
+        logging.warning(f"Keshni tekshirishda xatolik: {e}")
+
+    target_url = youtube_id if youtube_id.startswith("http") else f"https://www.youtube.com/watch?v={youtube_id}"
     
-    # 1. youtube_downloader.py orqali yuklash
+    # 2. youtube_downloader.py orqali yuklab olish
     try:
         file_path = await asyncio.to_thread(download_youtube_audio, target_url, DOWNLOAD_DIR)
         if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 10240:
-            return file_path, "Audio Track"
+            return file_path, title_result, None
     except Exception as e:
-        logging.warning(f"youtube_downloader ishlamadi, Cobalt ga o'tilmoqda: {e}")
+        logging.warning(f"youtube_downloader ishlamadi, Cobalt API ga o'tilmoqda: {e}")
 
-    # 2. Cobalt API zaxirasi
+    # 3. Cobalt API orqali harakat qilib ko'rish
     cobalt_path = await _download_via_cobalt(target_url)
     if cobalt_path:
-        return cobalt_path, "Audio Track"
+        return cobalt_path, title_result, None
 
-    return None, "Audio Track"
+    return None, title_result, None
 
 
 # ---------------------------------------------------------------------------
-# MEDIA YUKLASH (Video)
+# VIDEO / MEDIA YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     import yt_dlp
