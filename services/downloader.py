@@ -3,6 +3,7 @@ import glob
 import shutil
 import asyncio
 import logging
+import subprocess
 import requests
 import yt_dlp
 
@@ -25,18 +26,23 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 SEARCH_CACHE = {}
 
 # Ishonchli va faol public instansiyalar
-PUBLIC_APIS = [
-    "https://api.cobalt.tools/",
-    "https://cobalt-api.kwiatekm.com/",
-    "https://co.wuk.sh/"
+PIPED_INSTANCES = [
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net",
+    "https://pipedapi.mha.fi"
 ]
 
 INVIDIOUS_INSTANCES = [
     "https://inv.nadeko.net",
     "https://invidious.nerdvpn.de",
-    "https://invidious.no-logs.how",
-    "https://invidious.projectsegfau.lt"
+    "https://invidious.no-logs.how"
 ]
+
+COBALT_APIS = [
+    "https://api.cobalt.tools/",
+    "https://co.wuk.sh/"
+]
+
 
 def format_duration(seconds: int) -> str:
     if not seconds:
@@ -44,6 +50,29 @@ def format_duration(seconds: int) -> str:
     minutes = int(seconds) // 60
     secs = int(seconds) % 60
     return f"{minutes}:{secs:02d}"
+
+
+def _convert_to_clean_mp3(input_file: str, output_file: str) -> bool:
+    """Istalgan audio/video faylni FFmpeg orqali toza MP3 ga o'tkazish"""
+    try:
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-i", input_file,
+            "-vn",
+            "-ar", "44100",
+            "-ac", "2",
+            "-b:a", "192k",
+            "-f", "mp3",
+            output_file
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 10240:
+            if os.path.exists(input_file) and input_file != output_file:
+                os.remove(input_file)
+            return True
+    except Exception as e:
+        logging.error(f"FFmpeg konvertatsiya xatosi: {e}")
+    return False
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
@@ -54,14 +83,32 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         return SEARCH_CACHE[clean_query]
 
     def _search():
-        # YouTube Search (Flat extraction)
+        # Piped API orqali qidirish (YouTube IP-bloklanishisiz va juda tez)
+        for instance in PIPED_INSTANCES:
+            try:
+                url = f"{instance}/search?q={query}&filter=music_songs"
+                res = requests.get(url, timeout=5)
+                if res.status_code == 200:
+                    items = res.json().get("items", [])
+                    results = []
+                    for item in items[:limit]:
+                        v_id = item.get("url", "").replace("/watch?v=", "")
+                        if v_id:
+                            results.append({
+                                'id': v_id,
+                                'title': item.get('title', 'Unknown Title'),
+                                'duration': format_duration(item.get('duration', 0)),
+                                'uploader': item.get('uploaderName', 'YouTube')
+                            })
+                    if results:
+                        SEARCH_CACHE[clean_query] = results
+                        return results
+            except Exception:
+                continue
+
+        # Fallback: yt-dlp search
         try:
-            yt_opts = {
-                'quiet': True, 
-                'no_warnings': True, 
-                'extract_flat': True,
-                'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15'
-            }
+            yt_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
             with yt_dlp.YoutubeDL(yt_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
                 results = []
@@ -78,16 +125,51 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                     SEARCH_CACHE[clean_query] = results
                     return results
         except Exception as e:
-            logging.error(f"YouTube search error: {e}")
+            logging.error(f"yt-dlp search error: {e}")
 
         return []
 
     return await asyncio.to_thread(_search)
 
 
+def _download_via_piped(video_id: str, out_file: str) -> tuple[bool, str]:
+    """Piped API orqali audioni xatolarsiz yuklab MP3 qilish"""
+    temp_raw = out_file + ".raw"
+    for instance in PIPED_INSTANCES:
+        try:
+            url = f"{instance}/streams/{video_id}"
+            res = requests.get(url, timeout=6)
+            if res.status_code == 200:
+                data = res.json()
+                title = data.get("title", "Audio Track")
+                audio_streams = data.get("audioStreams", [])
+                if audio_streams:
+                    # Eng yaxshi sifatli audio oqimini olish
+                    stream_url = audio_streams[0].get("url")
+                    r = requests.get(stream_url, stream=True, timeout=30)
+                    if r.status_code == 200:
+                        with open(temp_raw, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                f.write(chunk)
+                        if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 10240:
+                            if _convert_to_clean_mp3(temp_raw, out_file):
+                                logging.info(f"✅ Piped orqali toza MP3 yuklandi ({instance})")
+                                return True, title
+        except Exception:
+            continue
+        finally:
+            if os.path.exists(temp_raw):
+                try:
+                    os.remove(temp_raw)
+                except Exception:
+                    pass
+    return False, "Audio Track"
+
+
 def _download_via_invidious(video_id: str, out_file: str) -> tuple[bool, str]:
-    """Invidious proxy orqali IP bloklanmasdan yuklash"""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    """Invidious API orqali yuklash"""
+    temp_raw = out_file + ".raw"
+    headers = {"User-Agent": "Mozilla/5.0"}
     for instance in INVIDIOUS_INSTANCES:
         try:
             url = f"{instance}/api/v1/videos/{video_id}"
@@ -101,27 +183,30 @@ def _download_via_invidious(video_id: str, out_file: str) -> tuple[bool, str]:
                     stream_url = audio_streams[0].get("url")
                     r = requests.get(stream_url, stream=True, timeout=30)
                     if r.status_code == 200:
-                        with open(out_file, 'wb') as f:
+                        with open(temp_raw, 'wb') as f:
                             for chunk in r.iter_content(chunk_size=8192):
                                 f.write(chunk)
-                        if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
-                            logging.info(f"✅ Invidious orqali yuklandi: {instance}")
-                            return True, title
-        except Exception as e:
+                        if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 10240:
+                            if _convert_to_clean_mp3(temp_raw, out_file):
+                                logging.info(f"✅ Invidious orqali toza MP3 yuklandi ({instance})")
+                                return True, title
+        except Exception:
             continue
+        finally:
+            if os.path.exists(temp_raw):
+                try:
+                    os.remove(temp_raw)
+                except Exception:
+                    pass
     return False, "Audio Track"
 
 
 def _download_via_cobalt(target_url: str, out_file: str) -> bool:
     """Cobalt API orqali yuklash"""
-    payload = {
-        "url": target_url,
-        "downloadMode": "audio",
-        "audioFormat": "mp3"
-    }
+    payload = {"url": target_url, "downloadMode": "audio", "audioFormat": "mp3"}
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     
-    for api_url in PUBLIC_APIS:
+    for api_url in COBALT_APIS:
         try:
             res = requests.post(api_url, json=payload, headers=headers, timeout=8)
             if res.status_code == 200:
@@ -152,72 +237,42 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         file_prefix = video_id
 
     # 1. Keshni tekshirish
-    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-    files = glob.glob(pattern)
-    for f in files:
-        if os.path.getsize(f) > 10240 and not f.endswith(('.part', '.ytdl')):
-            logging.info(f"Qo'shiq keshdan olindi: {f}")
-            return f, "Audio Track"
+    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
+    if os.path.exists(pattern) and os.path.getsize(pattern) > 10240:
+        logging.info(f"Qo'shiq keshdan olindi: {pattern}")
+        return pattern, "Audio Track"
 
     def _download():
         out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-        # 1-Bosqich: Invidious Proxy (Kafolatli va IP-blokdan xoli)
+        # 1-Bosqich: Piped API (Eng tez va barqaror)
+        if not target_url.startswith("http://") and not target_url.startswith("https://") or "youtube" in target_url:
+            success, title = _download_via_piped(video_id, out_file)
+            if success:
+                return out_file, title
+
+        # 2-Bosqich: Invidious API
         if not target_url.startswith("http://") and not target_url.startswith("https://") or "youtube" in target_url:
             success, title = _download_via_invidious(video_id, out_file)
             if success:
                 return out_file, title
 
-        # 2-Bosqich: Cobalt API
+        # 3-Bosqich: Cobalt API
         if _download_via_cobalt(target_url, out_file):
             return out_file, "Audio Track"
 
-        # 3-Bosqich: yt-dlp (iOS Client Emulation bilan)
-        try:
-            ydl_opts = {
-                'format': 'ba/ba*/bestaudio/best',
-                'outtmpl': f'{DOWNLOAD_DIR}/{file_prefix}.%(ext)s',
-                'quiet': True,
-                'no_warnings': True,
-                'extractor_args': {
-                    'youtube': {
-                        'player_client': ['ios', 'android', 'mweb']
-                    }
-                }
-            }
-            if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
-                ydl_opts['ffmpeg_location'] = FFMPEG_PATH
-                ydl_opts['postprocessors'] = [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }]
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(target_url, download=True)
-                title = info.get('title', 'Audio Track') if info else 'Audio Track'
-                
-                files = glob.glob(pattern)
-                for f in files:
-                    if os.path.getsize(f) > 10240 and not f.endswith(('.part', '.ytdl')):
-                        return f, title
-        except Exception as e:
-            logging.error(f"yt-dlp xatoligi: {e}")
-
         return None, "Audio Track"
 
-    return await asyncio.to_thread(_download)
+    return await asyncio-to_thread(_download) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download)
 
 
 async def download_media(url: str) -> dict:
     file_prefix = "video_" + str(abs(hash(url)))[-8:]
+    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
     
-    pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.*")
-    files = glob.glob(pattern)
-    for f in files:
-        if os.path.getsize(f) > 10240 and not f.endswith(('.part', '.ytdl')):
-            logging.info(f"Video keshdan olindi: {f}")
-            return {"file_path": f, "title": "Video", "id": file_prefix}
+    if os.path.exists(pattern) and os.path.getsize(pattern) > 10240:
+        logging.info(f"Video keshdan olindi: {pattern}")
+        return {"file_path": pattern, "title": "Video", "id": file_prefix}
 
     def _download():
         out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp4")
@@ -226,4 +281,4 @@ async def download_media(url: str) -> dict:
 
         return {"file_path": None, "title": "Video", "id": None}
 
-    return await asyncio.to_thread(_download)
+    return await asyncio.to_thread(_download) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download)
