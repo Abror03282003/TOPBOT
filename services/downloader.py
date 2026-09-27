@@ -22,10 +22,8 @@ if not os.path.exists(FFMPEG_PATH):
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-# Qidiruv keshlanishi
 SEARCH_CACHE = {}
 
-# Ishonchli va faol public instansiyalar
 PIPED_INSTANCES = [
     "https://pipedapi.kavin.rocks",
     "https://api.piped.privacydev.net",
@@ -53,7 +51,7 @@ def format_duration(seconds: int) -> str:
 
 
 def _convert_to_clean_mp3(input_file: str, output_file: str) -> bool:
-    """Istalgan audio/video faylni FFmpeg orqali toza MP3 ga o'tkazish"""
+    """Audio oqimini FFmpeg orqali toza MP3 ga o'tkazish"""
     try:
         cmd = [
             FFMPEG_PATH, "-y",
@@ -83,10 +81,36 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
         return SEARCH_CACHE[clean_query]
 
     def _search():
-        # Piped API orqali qidirish (YouTube IP-bloklanishisiz va juda tez)
+        # 1. yt-dlp flat extraction (O'zbekcha va barcha tillardagi qo'shiqlar uchun eng mos)
+        try:
+            yt_opts = {
+                'quiet': True, 
+                'no_warnings': True, 
+                'extract_flat': True,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            }
+            with yt_dlp.YoutubeDL(yt_opts) as ydl:
+                res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+                results = []
+                if res and 'entries' in res and res['entries']:
+                    for entry in res['entries']:
+                        if entry and entry.get('id'):
+                            results.append({
+                                'id': entry.get('id'),
+                                'title': entry.get('title', 'Unknown Title'),
+                                'duration': format_duration(entry.get('duration', 0)),
+                                'uploader': entry.get('uploader', 'YouTube')
+                            })
+                if results:
+                    SEARCH_CACHE[clean_query] = results
+                    return results
+        except Exception as e:
+            logging.error(f"yt-dlp search error: {e}")
+
+        # 2. Piped API (Zaxira qidiruv)
         for instance in PIPED_INSTANCES:
             try:
-                url = f"{instance}/search?q={query}&filter=music_songs"
+                url = f"{instance}/search?q={query}&filter=all"
                 res = requests.get(url, timeout=5)
                 if res.status_code == 200:
                     items = res.json().get("items", [])
@@ -106,34 +130,12 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
             except Exception:
                 continue
 
-        # Fallback: yt-dlp search
-        try:
-            yt_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
-            with yt_dlp.YoutubeDL(yt_opts) as ydl:
-                res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-                results = []
-                if res and 'entries' in res and res['entries']:
-                    for entry in res['entries']:
-                        if entry and entry.get('id'):
-                            results.append({
-                                'id': entry.get('id'),
-                                'title': entry.get('title', 'Unknown Title'),
-                                'duration': format_duration(entry.get('duration', 0)),
-                                'uploader': entry.get('uploader', 'YouTube')
-                            })
-                if results:
-                    SEARCH_CACHE[clean_query] = results
-                    return results
-        except Exception as e:
-            logging.error(f"yt-dlp search error: {e}")
-
         return []
 
     return await asyncio.to_thread(_search)
 
 
 def _download_via_piped(video_id: str, out_file: str) -> tuple[bool, str]:
-    """Piped API orqali audioni xatolarsiz yuklab MP3 qilish"""
     temp_raw = out_file + ".raw"
     for instance in PIPED_INSTANCES:
         try:
@@ -144,7 +146,6 @@ def _download_via_piped(video_id: str, out_file: str) -> tuple[bool, str]:
                 title = data.get("title", "Audio Track")
                 audio_streams = data.get("audioStreams", [])
                 if audio_streams:
-                    # Eng yaxshi sifatli audio oqimini olish
                     stream_url = audio_streams[0].get("url")
                     r = requests.get(stream_url, stream=True, timeout=30)
                     if r.status_code == 200:
@@ -153,7 +154,7 @@ def _download_via_piped(video_id: str, out_file: str) -> tuple[bool, str]:
                                 f.write(chunk)
                         if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 10240:
                             if _convert_to_clean_mp3(temp_raw, out_file):
-                                logging.info(f"✅ Piped orqali toza MP3 yuklandi ({instance})")
+                                logging.info(f"✅ Piped orqali MP3 yuklandi ({instance})")
                                 return True, title
         except Exception:
             continue
@@ -167,7 +168,6 @@ def _download_via_piped(video_id: str, out_file: str) -> tuple[bool, str]:
 
 
 def _download_via_invidious(video_id: str, out_file: str) -> tuple[bool, str]:
-    """Invidious API orqali yuklash"""
     temp_raw = out_file + ".raw"
     headers = {"User-Agent": "Mozilla/5.0"}
     for instance in INVIDIOUS_INSTANCES:
@@ -188,7 +188,7 @@ def _download_via_invidious(video_id: str, out_file: str) -> tuple[bool, str]:
                                 f.write(chunk)
                         if os.path.exists(temp_raw) and os.path.getsize(temp_raw) > 10240:
                             if _convert_to_clean_mp3(temp_raw, out_file):
-                                logging.info(f"✅ Invidious orqali toza MP3 yuklandi ({instance})")
+                                logging.info(f"✅ Invidious orqali MP3 yuklandi ({instance})")
                                 return True, title
         except Exception:
             continue
@@ -202,7 +202,6 @@ def _download_via_invidious(video_id: str, out_file: str) -> tuple[bool, str]:
 
 
 def _download_via_cobalt(target_url: str, out_file: str) -> bool:
-    """Cobalt API orqali yuklash"""
     payload = {"url": target_url, "downloadMode": "audio", "audioFormat": "mp3"}
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     
@@ -236,7 +235,6 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
         video_id = str(video_id_or_url)
         file_prefix = video_id
 
-    # 1. Keshni tekshirish
     pattern = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
     if os.path.exists(pattern) and os.path.getsize(pattern) > 10240:
         logging.info(f"Qo'shiq keshdan olindi: {pattern}")
@@ -245,7 +243,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
     def _download():
         out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
-        # 1-Bosqich: Piped API (Eng tez va barqaror)
+        # 1-Bosqich: Piped API
         if not target_url.startswith("http://") and not target_url.startswith("https://") or "youtube" in target_url:
             success, title = _download_via_piped(video_id, out_file)
             if success:
@@ -263,7 +261,7 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str]:
 
         return None, "Audio Track"
 
-    return await asyncio-to_thread(_download) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download)
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
@@ -281,4 +279,4 @@ async def download_media(url: str) -> dict:
 
         return {"file_path": None, "title": "Video", "id": None}
 
-    return await asyncio.to_thread(_download) if hasattr(asyncio, "to_thread") else await asyncio.get_event_loop().run_in_executor(None, _download)
+    return await asyncio.to_thread(_download)
