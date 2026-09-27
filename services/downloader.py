@@ -29,7 +29,6 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
 def format_duration(seconds) -> str:
-    """Saniyalarni MM:SS formatiga o'tkazadi."""
     if not seconds:
         return "0:00"
     try:
@@ -39,7 +38,7 @@ def format_duration(seconds) -> str:
 
 
 # ---------------------------------------------------------------------------
-# QIDIRUV (Search) - YouTube va SoundCloud
+# QIDIRUV (Search)
 # ---------------------------------------------------------------------------
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     query = query.strip()
@@ -56,7 +55,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
             'no_warnings': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'android', 'ios']
+                    'player_client': ['ios', 'tvhtml5', 'web']
                 }
             }
         }
@@ -80,7 +79,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
         except Exception as e:
             logging.warning(f"YouTube search error: {e}")
 
-        # 2-Urinish: SoundCloud bo'yicha qidirish (agar YouTube ishlamasa)
+        # 2-Urinish: SoundCloud
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 res = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
@@ -106,7 +105,7 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# COBALT API FALLBACK (YouTube bloklaganda zaxira yuklovchi)
+# COBALT API FALLBACK (Yangilangan ishchi domenlar)
 # ---------------------------------------------------------------------------
 async def _download_via_cobalt(video_id_or_url: str) -> str | None:
     target_url = video_id_or_url if str(video_id_or_url).startswith("http") else f"https://www.youtube.com/watch?v={video_id_or_url}"
@@ -118,26 +117,29 @@ async def _download_via_cobalt(video_id_or_url: str) -> str | None:
     }
     headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
 
     instances = [
-        "https://co.wuk.sh/api/json",
-        "https://api.cobalt.tools/api/json"
+        "https://api.cobalt.tools",
+        "https://cobalt.stream",
+        "https://cobalt-api.mha.fi"
     ]
 
     async with aiohttp.ClientSession(headers=headers) as session:
         for instance in instances:
             try:
-                async with session.post(instance, json=payload, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                    if resp.status == 200:
+                endpoint = f"{instance}/api/json" if "cobalt.tools" in instance else f"{instance}/"
+                async with session.post(endpoint, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status in (200, 201):
                         data = await resp.json()
                         stream_url = data.get("url")
                         if not stream_url:
                             continue
 
                         output_path = os.path.join(DOWNLOAD_DIR, f"cobalt_{abs(hash(video_id_or_url))}.mp3")
-                        async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=30)) as s_resp:
+                        async with session.get(stream_url, timeout=aiohttp.ClientTimeout(total=40)) as s_resp:
                             if s_resp.status == 200:
                                 with open(output_path, "wb") as f:
                                     async for chunk in s_resp.content.iter_chunked(64 * 1024):
@@ -153,19 +155,13 @@ async def _download_via_cobalt(video_id_or_url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# AUDIO YUKLASH (Asosiy funksiya - track_title, *args, **kwargs moslashtirilgan)
+# AUDIO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_audio_by_id(video_id_or_url: str, track_title: str = None, *args, **kwargs) -> tuple[str | None, str, str | None]:
-    """
-    1-Bosqich: Keshni tekshirish (database.get_cached_file)
-    2-Bosqich: youtube_downloader.py orqali yuklash
-    3-Bosqich: Cobalt API zaxirasi
-    Qaytaradi: (fayl_yo'li, trek_nomi, cached_file_id)
-    """
     youtube_id = str(video_id_or_url)
     title_result = track_title or "Audio Track"
 
-    # 1. Keshni tekshirish (agar avval yuklangan bo'lsa)
+    # Keshni tekshirish (Bazadan noto'g'ri fayl qaytmasligi uchun)
     try:
         from database import get_cached_file
         cached_file_id = await get_cached_file(youtube_id)
@@ -176,24 +172,24 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None, *a
 
     target_url = youtube_id if youtube_id.startswith("http") else f"https://www.youtube.com/watch?v={youtube_id}"
     
-    # 2. youtube_downloader.py orqali yuklab olish
+    # 1. Cobalt API orqali sinab ko'rish (Railway IP blokini aylanib o'tish uchun eng tezkor yo'l)
+    cobalt_path = await _download_via_cobalt(target_url)
+    if cobalt_path:
+        return cobalt_path, title_result, None
+
+    # 2. youtube_downloader.py (yt-dlp + cookies)
     try:
         file_path = await asyncio.to_thread(download_youtube_audio, target_url, DOWNLOAD_DIR)
         if file_path and os.path.exists(file_path) and os.path.getsize(file_path) > 10240:
             return file_path, title_result, None
     except Exception as e:
-        logging.warning(f"youtube_downloader ishlamadi, Cobalt API ga o'tilmoqda: {e}")
-
-    # 3. Cobalt API orqali harakat qilib ko'rish
-    cobalt_path = await _download_via_cobalt(target_url)
-    if cobalt_path:
-        return cobalt_path, title_result, None
+        logging.warning(f"youtube_downloader ishlamadi: {e}")
 
     return None, title_result, None
 
 
 # ---------------------------------------------------------------------------
-# VIDEO / MEDIA YUKLASH
+# VIDEO YUKLASH
 # ---------------------------------------------------------------------------
 async def download_media(url: str) -> dict:
     import yt_dlp
@@ -209,7 +205,7 @@ async def download_media(url: str) -> dict:
             'max_filesize': 50 * 1024 * 1024,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['mweb', 'android']
+                    'player_client': ['ios', 'tvhtml5']
                 }
             }
         }
