@@ -135,7 +135,7 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
 
 
 def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[str | None, str]:
-    """YouTube IP blok berganda, aynan tanlangan trek nomi bo'yicha SoundCloud'dan yuklash"""
+    """YouTube IP bloklaganda har bir trek nomi bo'yicha alohida SoundCloud'dan tortadi"""
     if not search_title or search_title == "Audio Track":
         return None, "Audio Track"
 
@@ -168,7 +168,7 @@ def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[s
 async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
-    # Keshni tekshirish
+    # Bazadan keshni tekshirish
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
         return None, track_title or "Audio Track", cached_file_id
@@ -183,7 +183,7 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
     def _download():
         title = track_title or "Audio Track"
 
-        # 1. Avval YouTube orqali yuklashga urinish
+        # 1. YouTube orqali yuklab ko'rish
         ydl_opts_fast = _get_active_opts({
             'format': 'ba/ba*/bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
@@ -219,14 +219,15 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
             if os.path.exists(f) and os.path.getsize(f) > 10240:
                 return f, title, None
 
-        # 2. Agar YouTube bloklasa, aynan tanlangan qo'shiq nomi bo'yicha SoundCloud'dan qidirib yuklaydi
+        # 2. Agar YouTube bloklasa, SoundCloud'dan trek nomiga qarab yuklash
         sc_file, sc_title = _download_soundcloud_fallback(title, file_prefix)
         if sc_file:
             return sc_file, sc_title, None
 
         return None, title, None
 
-    return await asyncio-to_thread(_download)
+    # TUG'RILANDI: asyncio.to_thread to'g'ri nuqta bilan yozildi
+    return await asyncio.to_thread(_download)
 
 
 async def download_media(url: str) -> dict:
