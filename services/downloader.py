@@ -26,7 +26,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 SEARCH_CACHE = {}
 
-# Cobalt instancelari (ishlamasa keyingi usulga o'tadi)
+# Cobalt instancelari
 COBALT_INSTANCES = [
     "https://api.cobalt.tools/",
     "https://cobalt.api.scity.gov.tw/",
@@ -70,18 +70,26 @@ def _convert_to_clean_mp3(input_file: str, output_file: str) -> bool:
 
 def _get_cookies_file() -> str | None:
     """Railway Environment Variable dan cookies.txt yaratish"""
-    cookies_b64 = os.getenv("YT_COOKIES_BASE64")
+    # Avval sizning nomingizni, keyin eski nomni tekshiradi
+    cookies_b64 = os.getenv("YOUTUBE_COOKIES") or os.getenv("YT_COOKIES_BASE64")
+
     if not cookies_b64:
+        logging.warning("❌ YOUTUBE_COOKIES topilmadi! Railway Variables ni tekshiring.")
         return None
 
     try:
         content = base64.b64decode(cookies_b64).decode("utf-8")
+
+        if "youtube.com" not in content.lower() and ".youtube.com" not in content.lower():
+            logging.warning("❌ Cookies faylida youtube.com topilmadi. Noto'g'ri cookies bo'lishi mumkin.")
+
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
         tmp.write(content)
         tmp.close()
+        logging.info(f"✅ Cookies muvaffaqiyatli yuklandi ({len(content)} belgi)")
         return tmp.name
     except Exception as e:
-        logging.error(f"Cookies decode xatosi: {e}")
+        logging.error(f"❌ Cookies decode xatosi: {e}")
         return None
 
 
