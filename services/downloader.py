@@ -4,9 +4,12 @@ import shutil
 import asyncio
 import logging
 import subprocess
+import tempfile
+import base64
 import requests
 import yt_dlp
 
+# ====================== FFMPEG ======================
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -23,11 +26,11 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 SEARCH_CACHE = {}
 
-# Rasmiy va faol Cobalt API instansiyalari
+# Cobalt instancelari (ishlamasa keyingi usulga o'tadi)
 COBALT_INSTANCES = [
     "https://api.cobalt.tools/",
     "https://cobalt.api.scity.gov.tw/",
-    "https://cobalt.v0.co/"
+    "https://cobalt.v0.co/",
 ]
 
 
@@ -52,7 +55,7 @@ def _convert_to_clean_mp3(input_file: str, output_file: str) -> bool:
             "-f", "mp3",
             output_file
         ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=35)
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40)
         if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 10240:
             if os.path.exists(input_file) and input_file != output_file:
                 try:
@@ -65,9 +68,27 @@ def _convert_to_clean_mp3(input_file: str, output_file: str) -> bool:
     return False
 
 
+def _get_cookies_file() -> str | None:
+    """Railway Environment Variable dan cookies.txt yaratish"""
+    cookies_b64 = os.getenv("YT_COOKIES_BASE64")
+    if not cookies_b64:
+        return None
+
+    try:
+        content = base64.b64decode(cookies_b64).decode("utf-8")
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+        tmp.write(content)
+        tmp.close()
+        return tmp.name
+    except Exception as e:
+        logging.error(f"Cookies decode xatosi: {e}")
+        return None
+
+
+# ====================== QIDIRUV ======================
 async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     clean_query = query.strip().lower()
-    
+
     if clean_query in SEARCH_CACHE:
         logging.info(f"Qidiruv keshdan olindi: {clean_query}")
         return SEARCH_CACHE[clean_query]
@@ -75,8 +96,8 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     def _search():
         try:
             yt_opts = {
-                'quiet': True, 
-                'no_warnings': True, 
+                'quiet': True,
+                'no_warnings': True,
                 'extract_flat': True,
                 'skip_download': True,
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -103,8 +124,9 @@ async def search_tracks(query: str, limit: int = 20) -> list[dict]:
     return await asyncio.to_thread(_search)
 
 
+# ====================== COBALT ======================
 def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
-    """Rasmiy Cobalt API orqali yuklash"""
+    """Cobalt API orqali yuklash"""
     payload = {
         "url": target_url,
         "downloadMode": "audio",
@@ -115,7 +137,7 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
         "Content-Type": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
-    
+
     temp_raw = out_file + ".raw"
 
     for api_url in COBALT_INSTANCES:
@@ -125,7 +147,7 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
                 data = res.json()
                 download_url = data.get("url") if data.get("status") in ["tunnel", "redirect"] else None
                 if download_url:
-                    r = requests.get(download_url, stream=True, timeout=45)
+                    r = requests.get(download_url, stream=True, timeout=50)
                     if r.status_code == 200:
                         with open(temp_raw, 'wb') as f:
                             for chunk in r.iter_content(chunk_size=16384):
@@ -143,11 +165,15 @@ def _download_via_cobalt(target_url: str, out_file: str) -> tuple[bool, str]:
                     os.remove(temp_raw)
                 except Exception:
                     pass
+
     return False, "Audio Track"
 
 
+# ====================== YT-DLP (COOKIES + BYPASS) ======================
 def _download_via_ytdlp_bypass(target_url: str, out_file: str) -> tuple[bool, str]:
-    """yt-dlp ning TV / Embed / Web_creator client emulyatsiyasi (Bot-checkni aylanib o'tadi)"""
+    """yt-dlp + cookies + TV/Web Creator client"""
+    cookies_file = _get_cookies_file()
+
     try:
         ydl_opts = {
             'format': 'ba/ba*/bestaudio/best',
@@ -157,11 +183,15 @@ def _download_via_ytdlp_bypass(target_url: str, out_file: str) -> tuple[bool, st
             'overwrites': True,
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['tvhtml5', 'web_creator', 'android']
+                    'player_client': ['tvhtml5', 'web_creator', 'android', 'ios']
                 }
             }
         }
-        
+
+        if cookies_file:
+            ydl_opts['cookiefile'] = cookies_file
+            logging.info("Cookies ishlatilmoqda...")
+
         if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
             ydl_opts['ffmpeg_location'] = FFMPEG_PATH
             ydl_opts['postprocessors'] = [{
@@ -173,7 +203,7 @@ def _download_via_ytdlp_bypass(target_url: str, out_file: str) -> tuple[bool, st
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=True)
             title = info.get('title', 'Audio Track') if info else 'Audio Track'
-            
+
             base_prefix = out_file.replace('.mp3', '')
             for f in glob.glob(f"{base_prefix}.*"):
                 if not f.endswith(('.part', '.ytdl')) and os.path.getsize(f) > 10240:
@@ -182,15 +212,24 @@ def _download_via_ytdlp_bypass(target_url: str, out_file: str) -> tuple[bool, st
                     else:
                         if f != out_file:
                             shutil.move(f, out_file)
+                    logging.info("✅ yt-dlp orqali yuklandi.")
                     return True, title
+
     except Exception as e:
         logging.error(f"YT-DLP bypass xatosi: {e}")
+    finally:
+        if cookies_file and os.path.exists(cookies_file):
+            try:
+                os.remove(cookies_file)
+            except Exception:
+                pass
 
     return False, "Audio Track"
 
 
+# ====================== SOUNDCLOUD ZAXIRA ======================
 def _download_via_soundcloud_fallback(track_title: str, out_file: str) -> tuple[bool, str]:
-    """YouTube butunlay blok bo'lsa, SoundCloud orqali qidirib yuklash"""
+    """YouTube blok bo'lsa SoundCloud orqali qidirib yuklash"""
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -224,10 +263,10 @@ def _download_via_soundcloud_fallback(track_title: str, out_file: str) -> tuple[
                         return True, title
     except Exception as e:
         logging.error(f"SoundCloud fallback xatosi: {e}")
-
     return False, "Audio Track"
 
 
+# ====================== ASOSIY YUKLASH ======================
 async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str]:
     if str(video_id_or_url).startswith("http"):
         target_url = video_id_or_url
@@ -238,22 +277,23 @@ async def download_audio_by_id(video_id_or_url: str, track_title: str = None) ->
 
     out_file = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
 
+    # Kesh
     if os.path.exists(out_file) and os.path.getsize(out_file) > 10240:
         logging.info(f"Qo'shiq keshdan olindi: {out_file}")
         return out_file, track_title or "Audio Track"
 
     def _download():
-        # 1-Bosqich: Cobalt API
+        # 1. Cobalt
         success, title = _download_via_cobalt(target_url, out_file)
         if success:
             return out_file, title
 
-        # 2-Bosqich: yt-dlp tvhtml5 / web_creator client bypass
+        # 2. yt-dlp + cookies
         success, title = _download_via_ytdlp_bypass(target_url, out_file)
         if success:
             return out_file, title
 
-        # 3-Bosqich: SoundCloud zaxirasi (agar YouTube butunlay IP blok qilgan bo'lsa)
+        # 3. SoundCloud zaxira
         if track_title:
             success, title = _download_via_soundcloud_fallback(track_title, out_file)
             if success:
@@ -274,8 +314,11 @@ async def download_media(url: str) -> dict:
 
     def _download():
         payload = {"url": url, "downloadMode": "auto"}
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
-        
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
         for api_url in COBALT_INSTANCES:
             try:
                 res = requests.post(api_url, json=payload, headers=headers, timeout=12)
