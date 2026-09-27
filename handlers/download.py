@@ -312,8 +312,9 @@ async def handle_download_callback(call: CallbackQuery):
     status_msg = await call.message.answer(f"⏳ <b>{send_title}</b> yuklanmoqda...", parse_mode="HTML")
     
     try:
-        # XATOLIK BURALDA TO'G'RILANDI: *_ yordamida funksiya qaytargan istalgan sonli qiymatlar xavfsiz qabul qilinadi
-        file_path, title, *_ = await download_audio_by_id(track_id_or_url)
+        #  ИСПРАВЛЕНО: Теперь send_title передается явно в track_title,
+        # благодаря чему SoundCloud ищет именно выбиранную песню при блокировке YouTube.
+        file_path, title, *_ = await download_audio_by_id(track_id_or_url, track_title=send_title)
         
         if title and title != "Audio Track":
             send_title = title
