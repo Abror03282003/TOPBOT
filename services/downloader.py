@@ -3,11 +3,11 @@ import glob
 import shutil
 import asyncio
 import logging
+import requests
 import yt_dlp
 from pydub import AudioSegment
 from database import get_cached_file, save_to_cache
 
-# Поиск путей к FFmpeg и FFprobe в системе
 FFMPEG_PATH = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 FFPROBE_PATH = shutil.which("ffprobe") or shutil.which("ffmpeg") or "/usr/bin/ffprobe"
 
@@ -22,9 +22,8 @@ if not os.path.exists(FFMPEG_PATH):
         else:
             FFPROBE_PATH = FFMPEG_PATH
     except Exception as e:
-        logging.warning(f"Ошибка загрузки imageio_ffmpeg: {e}")
+        logging.warning(f"imageio_ffmpeg yuklashda ogohlantirish: {e}")
 
-# Настройка Pydub для использования найденного FFmpeg
 if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
     AudioSegment.converter = FFMPEG_PATH
 if FFPROBE_PATH and os.path.exists(FFPROBE_PATH):
@@ -34,7 +33,6 @@ DOWNLOAD_DIR = os.path.abspath("downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 COOKIES_PATH = os.path.join(DOWNLOAD_DIR, "cookies.txt")
 
-# Базовые опции yt-dlp для обхода ограничений
 BASE_YDL_OPTS = {
     'quiet': True,
     'no_warnings': True,
@@ -48,7 +46,6 @@ if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
 
 
 def _ensure_cookies_file():
-    """Динамическое создание cookies.txt из переменной окружения YOUTUBE_COOKIES"""
     cookies_env = os.environ.get("YOUTUBE_COOKIES")
     if cookies_env:
         cookies_env_cleaned = cookies_env.strip()
@@ -62,13 +59,12 @@ def _ensure_cookies_file():
         try:
             with open(COOKIES_PATH, "w", encoding="utf-8") as f:
                 f.write(cookies_env_cleaned)
-            logging.info("✅ Файл cookies.txt успешно создан из YOUTUBE_COOKIES")
+            logging.info("✅ Cookies fayli YOUTUBE_COOKIES dan yaratildi.")
         except Exception as e:
-            logging.error(f"Ошибка записи cookies.txt: {e}")
+            logging.error(f"Cookies yozishda xatolik: {e}")
 
 
 def _get_active_opts(extra_opts: dict) -> dict:
-    """Сборка параметров yt-dlp с подтягиванием актуальных куки"""
     _ensure_cookies_file()
     opts = {**BASE_YDL_OPTS, **extra_opts}
     if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
@@ -77,7 +73,6 @@ def _get_active_opts(extra_opts: dict) -> dict:
 
 
 def format_duration(seconds: int) -> str:
-    """Форматирование длительности в MM:SS"""
     if not seconds:
         return "0:00"
     minutes = int(seconds) // 60
@@ -86,19 +81,18 @@ def format_duration(seconds: int) -> str:
 
 
 async def search_tracks(query: str, limit: int = 30) -> list[dict]:
-    """Поиск треков на YouTube (основной) и SoundCloud (резервный)"""
+    # 1. YouTube Qidiruv (iOS va Android clientlari orqali)
     search_opts = _get_active_opts({
         'extract_flat': True,
         'skip_download': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb', 'tv_embedded']
+                'player_client': ['ios', 'android', 'mweb']
             }
         }
     })
 
     def _search():
-        # 1. Поиск на YouTube
         try:
             with yt_dlp.YoutubeDL(search_opts) as ydl:
                 res = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
@@ -115,9 +109,9 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                 if results:
                     return results
         except Exception as e:
-            logging.error(f"Ошибка поиска на YouTube: {e}")
+            logging.error(f"YouTube qidiruv xatosi: {e}")
 
-        # 2. Резервный поиск на SoundCloud
+        # 2. SoundCloud Qidiruv Zaxirasi
         try:
             sc_opts = _get_active_opts({'extract_flat': True})
             with yt_dlp.YoutubeDL(sc_opts) as ydl:
@@ -135,20 +129,47 @@ async def search_tracks(query: str, limit: int = 30) -> list[dict]:
                             })
                 return results
         except Exception as e:
-            logging.error(f"Ошибка поиска на SoundCloud: {e}")
+            logging.error(f"SoundCloud qidiruv xatosi: {e}")
             return []
 
     return await asyncio.to_thread(_search)
 
 
-async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, str | None]:
-    """Загрузка аудио по ID/ссылке с конвертацией в MP3 192kbps"""
+def _download_soundcloud_fallback(search_title: str, out_prefix: str) -> tuple[str | None, str]:
+    """YouTube IP blok berganida SoundCloud orqali trekni tortish"""
+    try:
+        sc_opts = _get_active_opts({
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{out_prefix}.%(ext)s'),
+        })
+        if FFMPEG_PATH and os.path.exists(FFMPEG_PATH):
+            sc_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+
+        with yt_dlp.YoutubeDL(sc_opts) as ydl:
+            info = ydl.extract_info(f"scsearch1:{search_title}", download=True)
+            if info and 'entries' in info and info['entries']:
+                entry = info['entries'][0]
+                title = entry.get('title', search_title)
+                expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{out_prefix}.mp3")
+                if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 10240:
+                    logging.info("✅ SoundCloud zaxirasi orqali MP3 muvaffaqiyatli yuklandi.")
+                    return expected_mp3, title
+    except Exception as e:
+        logging.error(f"SoundCloud zaxira xatosi: {e}")
+    return None, "Audio Track"
+
+
+async def download_audio_by_id(video_id_or_url: str, track_title: str = None) -> tuple[str | None, str, str | None]:
     youtube_id = str(video_id_or_url)
     
-    # Проверка кеша в базе данных
+    # Bazadan keshni tekshirish
     cached_file_id = await get_cached_file(youtube_id)
     if cached_file_id:
-        return None, "Audio Track", cached_file_id
+        return None, track_title or "Audio Track", cached_file_id
 
     if str(video_id_or_url).startswith("http"):
         url = video_id_or_url
@@ -158,16 +179,15 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
         file_prefix = str(video_id_or_url)
 
     def _download():
-        title = "Audio Track"
+        title = track_title or "Audio Track"
 
-        # 1-й этап: Быстрое скачивание с эмуляцией мобильных/TV клиентов
+        # 1-Bosqich: yt-dlp iOS/TV clientlari bilan (Cookies'siz ham cheklovni aylanib o'tadi)
         ydl_opts_fast = _get_active_opts({
             'format': 'ba/ba*/bestaudio/best',
             'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
-            'user_agent': 'com.google.android.youtube/19.02.39 (Linux; U; Android 12; gts8uw) gzip',
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'ios', 'mweb', 'tv_embedded']
+                    'player_client': ['ios', 'tv', 'mweb']
                 }
             }
         })
@@ -183,9 +203,9 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
             with yt_dlp.YoutubeDL(ydl_opts_fast) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info and isinstance(info, dict):
-                    title = info.get('title', 'Audio Track')
+                    title = info.get('title', title)
         except Exception as e:
-            logging.error(f"Ошибка на 1-м этапе скачивания: {e}")
+            logging.error(f"YouTube 1-bosqich yuklash xatosi: {e}")
 
         expected_mp3 = os.path.join(DOWNLOAD_DIR, f"{file_prefix}.mp3")
         if os.path.exists(expected_mp3) and os.path.getsize(expected_mp3) > 10240:
@@ -197,23 +217,10 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
             if os.path.exists(f) and os.path.getsize(f) > 10240:
                 return f, title, None
 
-        # 2-й этап (Fallback): Обычный метод скачивания
-        ydl_opts_fallback = _get_active_opts({
-            'format': 'best',
-            'outtmpl': os.path.join(DOWNLOAD_DIR, f'{file_prefix}.%(ext)s'),
-        })
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info and isinstance(info, dict):
-                    title = info.get('title', 'Audio Track')
-        except Exception as e:
-            logging.error(f"Ошибка на этапе Fallback: {e}")
-
-        files = [f for f in glob.glob(pattern) if not f.endswith('.part') and not f.endswith('.ytdl')]
-        for f in files:
-            if os.path.exists(f) and os.path.getsize(f) > 10240:
-                return f, title, None
+        # 2-Bosqich: Agar YouTube butunlay IP blok qilsa -> SoundCloud zaxirasidan tortish
+        sc_file, sc_title = _download_soundcloud_fallback(title, file_prefix)
+        if sc_file:
+            return sc_file, sc_title, None
 
         return None, title, None
 
@@ -221,16 +228,14 @@ async def download_audio_by_id(video_id_or_url: str) -> tuple[str | None, str, s
 
 
 async def download_media(url: str) -> dict:
-    """Загрузка видеофайлов (до 50MB) в формате MP4"""
     ydl_opts = _get_active_opts({
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(id)s.%(ext)s'),
         'max_filesize': 50 * 1024 * 1024,
         'merge_output_format': 'mp4',
-        'user_agent': 'com.google.android.youtube/19.02.39 (Linux; U; Android 12; gts8uw) gzip',
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb'],
+                'player_client': ['ios', 'android', 'mweb'],
             }
         }
     })
@@ -253,7 +258,7 @@ async def download_media(url: str) -> dict:
                             "id": info.get("id")
                         }
         except Exception as e:
-            logging.error(f"Ошибка скачивания видео: {e}")
+            logging.error(f"Video yuklashda xatolik: {e}")
 
         return {"file_path": None, "title": "Video", "id": None}
 
